@@ -31,13 +31,34 @@ export default function GalleryPage({ images, onDeleteImage, showToast }) {
 
   return (
     <div className="flex-1 flex flex-col p-6 w-full max-w-6xl mx-auto z-10">
-      <div className="mb-8 text-left">
-        <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-indigo-200 via-slate-200 to-slate-400 bg-clip-text text-transparent">
-          Galería de Imágenes
-        </h1>
-        <p className="text-slate-400 text-sm mt-1">
-          Colección de imágenes capturadas y guardadas en tu navegador.
-        </p>
+      <div className="mb-8 flex flex-col sm:flex-row sm:justify-between sm:items-end gap-4 text-left">
+        <div>
+          <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-indigo-200 via-slate-200 to-slate-400 bg-clip-text text-transparent">
+            Galería de Imágenes
+          </h1>
+          <p className="text-slate-400 text-sm mt-1">
+            Colección de imágenes capturadas y guardadas en tu navegador.
+          </p>
+        </div>
+
+        <div className="flex flex-col sm:items-end space-y-1.5 shrink-0">
+          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Capacidad de la Galería</span>
+          <div className="flex items-center space-x-2">
+            <div className="w-28 h-2 bg-slate-950 rounded-full overflow-hidden border border-slate-850">
+              <div 
+                className={`h-full rounded-full transition-all duration-300 ${
+                  images.length >= 5
+                    ? 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.6)]'
+                    : 'bg-gradient-to-r from-indigo-500 to-purple-500'
+                }`}
+                style={{ width: `${Math.min((images.length / 5) * 100, 100)}%` }}
+              ></div>
+            </div>
+            <span className={`text-xs font-mono font-bold ${images.length >= 5 ? 'text-rose-400 animate-pulse' : 'text-indigo-400'}`}>
+              {images.length}/5
+            </span>
+          </div>
+        </div>
       </div>
 
       {images.length === 0 ? (

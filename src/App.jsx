@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import DropZonePage from './pages/DropZonePage'
+import BatchPage from './pages/BatchPage'
 import GalleryPage from './pages/GalleryPage'
 
 export default function App() {
@@ -26,10 +27,22 @@ export default function App() {
   }, [toast])
 
   const handleAddImage = (newImage) => {
+    if (images.length >= 5) {
+      showToast('La galería ha alcanzado el límite máximo de 5 imágenes. Elimina alguna para guardar.', 'error')
+      return false
+    }
     setImages((prev) => [newImage, ...prev])
     setCurrentPage('gallery')
     showToast('Imagen guardada en la galería con éxito', 'success')
+    return true
   }
+
+  const handleAddMultipleImages = (newImages) => {
+    setImages((prev) => [...newImages, ...prev])
+    setCurrentPage('gallery')
+    showToast(`¡${newImages.length} imágenes guardadas en la galería!`, 'success')
+  }
+
 
   const handleDeleteImage = (indexToDelete) => {
     setImages((prev) => prev.filter((_, index) => index !== indexToDelete))
@@ -65,6 +78,16 @@ export default function App() {
               Cargar
             </button>
             <button
+              onClick={() => setCurrentPage('batch')}
+              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 cursor-pointer ${
+                currentPage === 'batch'
+                  ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Procesar Lote
+            </button>
+            <button
               onClick={() => setCurrentPage('gallery')}
               className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 relative cursor-pointer ${
                 currentPage === 'gallery'
@@ -80,16 +103,22 @@ export default function App() {
               )}
             </button>
           </nav>
+
         </div>
       </header>
 
       <main className="flex-1 flex flex-col relative z-10">
-        {currentPage === 'dropzone' ? (
+        <div className={currentPage === 'dropzone' ? 'flex-1 flex flex-col' : 'hidden'}>
           <DropZonePage onAddImage={handleAddImage} showToast={showToast} />
-        ) : (
+        </div>
+        <div className={currentPage === 'batch' ? 'flex-1 flex flex-col' : 'hidden'}>
+          <BatchPage showToast={showToast} />
+        </div>
+        <div className={currentPage === 'gallery' ? 'flex-1 flex flex-col' : 'hidden'}>
           <GalleryPage images={images} onDeleteImage={handleDeleteImage} showToast={showToast} />
-        )}
+        </div>
       </main>
+
 
       {/* Toast Notification */}
       {toast && (

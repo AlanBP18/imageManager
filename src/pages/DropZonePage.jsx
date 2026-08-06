@@ -1,12 +1,43 @@
 import { useState, useRef, useEffect } from 'react'
 import { removeBackground } from '@imgly/background-removal'
+import { blobToWebP } from 'webp-converter-browser'
 import { copyImageToClipboard } from '../utils/clipboard'
 
 export default function DropZonePage({ onAddImage, showToast }) {
   const [imageSrc, setImageSrc] = useState(null)
   const [isDragOver, setIsDragOver] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
+  const [quality, setQuality] = useState(0.75)
   const fileInputRef = useRef(null)
+
+  const getFileSize = (srcString) => {
+    if (!srcString) return '0 KB'
+    if (srcString.startsWith('blob:')) {
+      return 'Calculando...'
+    }
+    const base64Data = srcString.split(',')[1]
+    if (!base64Data) return 'Desconocido'
+    const sizeInBytes = Math.round((base64Data.length * 3) / 4)
+    if (sizeInBytes > 1024 * 1024) {
+      return `${(sizeInBytes / (1024 * 1024)).toFixed(1)} MB`
+    }
+    return `${Math.round(sizeInBytes / 1024)} KB`
+  }
+
+  const blobToDataURL = (blob) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onloadend = () => resolve(reader.result)
+      reader.onerror = reject
+      reader.readAsDataURL(blob)
+    })
+  }
+
+  const getBlobFromSrc = async (src) => {
+    const response = await fetch(src)
+    return await response.blob()
+  }
+
 
   const handleFile = (file) => {
     if (!file.type.startsWith('image/')) {
@@ -41,8 +72,10 @@ export default function DropZonePage({ onAddImage, showToast }) {
 
   const handleSave = () => {
     if (imageSrc) {
-      onAddImage(imageSrc)
-      setImageSrc(null)
+      const success = onAddImage(imageSrc)
+      if (success) {
+        setImageSrc(null)
+      }
     }
   }
 
@@ -63,8 +96,8 @@ export default function DropZonePage({ onAddImage, showToast }) {
     try {
       showToast('Removiendo fondo de la imagen...', 'info')
       const blob = await removeBackground(imageSrc)
-      const url = URL.createObjectURL(blob)
-      setImageSrc(url)
+      const dataUrl = await blobToDataURL(blob)
+      setImageSrc(dataUrl)
       showToast('¡Fondo eliminado con éxito!', 'success')
     } catch (error) {
       console.error('Error removing background:', error)
@@ -73,6 +106,25 @@ export default function DropZonePage({ onAddImage, showToast }) {
       setIsProcessing(false)
     }
   }
+
+  const handleConvertToWebp = async () => {
+    if (!imageSrc || isProcessing) return
+    setIsProcessing(true)
+    try {
+      showToast('Comprimiendo y convirtiendo a WebP...', 'info')
+      const originalBlob = await getBlobFromSrc(imageSrc)
+      const webpBlob = await blobToWebP(originalBlob, { quality })
+      const dataUrl = await blobToDataURL(webpBlob)
+      setImageSrc(dataUrl)
+      showToast('¡Imagen convertida a WebP con éxito!', 'success')
+    } catch (error) {
+      console.error('Error converting to WebP:', error)
+      showToast('Error al convertir la imagen a WebP. Inténtalo de nuevo.', 'error')
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-6 relative">
@@ -128,7 +180,7 @@ export default function DropZonePage({ onAddImage, showToast }) {
               </div>
             </div>
           ) : (
-            <div className="w-full flex flex-col items-center space-y-8">
+            <div className="w-full flex flex-col items-center space-y-6">
               <div className="relative w-full aspect-video overflow-hidden rounded-2xl border border-slate-800 shadow-2xl bg-checkerboard flex items-center justify-center p-4">
                 <img
                   className={`max-w-full max-h-[260px] object-contain rounded-lg transition-all duration-300 ${
@@ -138,6 +190,13 @@ export default function DropZonePage({ onAddImage, showToast }) {
                   alt="Vista previa"
                 />
                 
+                {/* Size Badge */}
+                {!isProcessing && (
+                  <div className="absolute top-3 right-3 bg-slate-950/80 backdrop-blur-md px-3 py-1 rounded-xl border border-slate-800/80 text-[11px] font-semibold text-slate-300 font-mono shadow-lg">
+                    {getFileSize(imageSrc)}
+                  </div>
+                )}
+
                 {/* Scanner Laser effect */}
                 {isProcessing && (
                   <div className="absolute left-0 right-0 h-0.5 bg-indigo-400 shadow-[0_0_12px_#818cf8] animate-scan pointer-events-none"></div>
@@ -148,10 +207,38 @@ export default function DropZonePage({ onAddImage, showToast }) {
                   <div className="absolute inset-0 bg-slate-950/50 backdrop-blur-xs rounded-2xl flex flex-col items-center justify-center space-y-4">
                     <div className="w-10 h-10 border-3 border-indigo-500/20 border-t-indigo-400 rounded-full animate-spin"></div>
                     <span className="text-indigo-200 text-xs font-semibold tracking-wider uppercase bg-slate-950/80 px-4 py-1.5 rounded-full border border-slate-800 shadow-lg">
-                      Procesando IA...
+                      Procesando...
                     </span>
                   </div>
                 )}
+              </div>
+
+              {/* Compression Slider Controls */}
+              <div className="w-full bg-slate-900/50 border border-slate-800/80 rounded-2xl p-4 flex flex-col space-y-3">
+                <div className="flex justify-between items-center">
+                  <span className="text-xs font-semibold text-slate-300">Calidad de Compresión WebP</span>
+                  <span className="text-xs font-bold text-indigo-400 bg-indigo-500/10 px-2.5 py-0.5 rounded-full border border-indigo-500/20">
+                    {Math.round(quality * 100)}%
+                  </span>
+                </div>
+                <div className="flex items-center space-x-3">
+                  <span className="text-[10px] text-slate-500 font-medium">Más Compresión</span>
+                  <input
+                    type="range"
+                    min="0.1"
+                    max="1.0"
+                    step="0.05"
+                    value={quality}
+                    onChange={(e) => setQuality(parseFloat(e.target.value))}
+                    className="flex-1 h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500 hover:accent-indigo-400 focus:outline-none transition-colors duration-200"
+                  />
+                  <span className="text-[10px] text-slate-500 font-medium">Más Calidad</span>
+                </div>
+                <div className="flex justify-between text-[9px] text-slate-500 font-mono">
+                  <span>~ peso mínimo (~80% reducción)</span>
+                  <span>balanceado</span>
+                  <span>~ sin pérdidas</span>
+                </div>
               </div>
 
               <div className="flex flex-wrap items-center justify-center gap-3 w-full">
@@ -195,6 +282,20 @@ export default function DropZonePage({ onAddImage, showToast }) {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
                   </svg>
                   Quitar Fondo
+                </button>
+
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    handleConvertToWebp()
+                  }}
+                  disabled={isProcessing}
+                  className="px-4 py-2.5 bg-emerald-950/40 hover:bg-emerald-900/50 text-emerald-300 hover:text-emerald-200 rounded-xl text-sm font-medium border border-emerald-900/40 hover:border-emerald-850/65 transition-all duration-200 disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+                >
+                  <svg className="w-4 h-4 text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                  </svg>
+                  Convertir a WebP
                 </button>
 
                 <button
