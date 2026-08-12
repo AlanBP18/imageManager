@@ -14,14 +14,14 @@ export default function GalleryPage({ images, onDeleteImage, showToast }) {
 
   const getFileSize = (srcString) => {
     if (!srcString) return '0 KB'
-    // If it is a blob URL (starts with blob:) we can't easily get the length from base64, 
-    // so we return a placeholder or calculate based on fetch length if we were async, 
-    // but a default/placeholder is safe.
+    // Si es una blob URL (empieza con blob:) no podemos calcular el tamaño directo desde base64.
+    // Como esta función no es asíncrona, ponemos un texto representativo.
     if (srcString.startsWith('blob:')) {
       return 'Generada por IA'
     }
     const base64Data = srcString.split(',')[1]
     if (!base64Data) return 'Desconocido'
+    // El tamaño aproximado de base64 a bytes reales es 3/4 de la longitud
     const sizeInBytes = Math.round((base64Data.length * 3) / 4)
     if (sizeInBytes > 1024 * 1024) {
       return `${(sizeInBytes / (1024 * 1024)).toFixed(1)} MB`
@@ -62,28 +62,33 @@ export default function GalleryPage({ images, onDeleteImage, showToast }) {
       </div>
 
       {images.length === 0 ? (
-        <div className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-slate-800 rounded-3xl p-12 bg-slate-900/20 backdrop-blur-xl min-h-[320px] transition-all duration-300">
-          <div className="relative mb-4">
-            <div className="absolute inset-0 bg-slate-800/20 rounded-2xl blur-xl"></div>
-            <div className="relative w-16 h-16 bg-slate-900 border border-slate-800 rounded-2xl flex items-center justify-center">
-              <svg className="w-8 h-8 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
-              </svg>
+        <div className="apple-glass rounded-3xl p-12 min-h-[320px] flex-1 flex flex-col items-center justify-center border-dashed border-slate-700/60">
+          <div className="apple-glass-backdrop"></div>
+          <div className="relative z-10 flex flex-col items-center justify-center text-center">
+            <div className="relative mb-4">
+              <div className="absolute inset-0 bg-slate-800/20 rounded-2xl blur-xl"></div>
+              <div className="relative w-16 h-16 bg-slate-900 border border-slate-800 rounded-2xl flex items-center justify-center">
+                <svg className="w-8 h-8 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                </svg>
+              </div>
             </div>
+            <p className="text-slate-400 text-sm font-medium">La galería está vacía</p>
+            <p className="text-slate-500 text-xs mt-1 max-w-xs text-center">
+              Carga o pega una imagen en la pestaña de carga para empezar a gestionarlas.
+            </p>
           </div>
-          <p className="text-slate-400 text-sm font-medium">La galería está vacía</p>
-          <p className="text-slate-500 text-xs mt-1 max-w-xs text-center">
-            Carga o pega una imagen en la pestaña de carga para empezar a gestionarlas.
-          </p>
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
           {images.map((img, index) => (
             <div
               key={index}
-              className="group relative bg-slate-900/40 border border-slate-900 rounded-2xl overflow-hidden hover:border-indigo-500/30 hover:shadow-[0_10px_30px_-15px_rgba(99,102,241,0.2)] transition-all duration-300 flex flex-col"
+              className="apple-glass rounded-2xl flex flex-col hover:border-indigo-500/30 hover:shadow-[0_10px_30px_-15px_rgba(99,102,241,0.2)] transition-all duration-300 group"
             >
-              {/* Image Preview Container */}
+              <div className="apple-glass-backdrop"></div>
+              <div className="relative z-10 flex flex-col h-full w-full">
+              {/* Contenedor de la vista previa de la imagen */}
               <div className="aspect-video w-full overflow-hidden bg-checkerboard flex items-center justify-center relative p-3 border-b border-slate-950">
                 <img
                   className="object-contain w-full h-full max-h-[140px] group-hover:scale-102 transition-transform duration-500"
@@ -91,7 +96,7 @@ export default function GalleryPage({ images, onDeleteImage, showToast }) {
                   alt={`Imagen ${index + 1}`}
                 />
 
-                {/* Hover Overlay with actions */}
+                {/* Capa al pasar el mouse con los botones de acción rápidos */}
                 <div className="absolute inset-0 bg-slate-950/40 backdrop-blur-xs opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-center justify-center gap-3">
                   <button
                     onClick={() => handleCopy(img, index)}
@@ -115,7 +120,7 @@ export default function GalleryPage({ images, onDeleteImage, showToast }) {
                 </div>
               </div>
 
-              {/* Card Footer Details */}
+              {/* Pie de la tarjeta con detalles de la imagen */}
               <div className="p-3 flex justify-between items-center bg-slate-900/60 backdrop-blur-md">
                 <div className="flex flex-col text-left">
                   <span className="text-[11px] text-indigo-400 font-bold tracking-wider uppercase">
@@ -148,6 +153,7 @@ export default function GalleryPage({ images, onDeleteImage, showToast }) {
                 </div>
               </div>
             </div>
+          </div>
           ))}
         </div>
       )}

@@ -13,7 +13,7 @@ export default function BatchPage({ showToast }) {
     removeBackground: false,
   })
 
-  // Processing states
+  // Estados internos para controlar el flujo de procesamiento
   const [isProcessing, setIsProcessing] = useState(false)
   const [currentIndex, setCurrentIndex] = useState(0)
   const [currentActionText, setCurrentActionText] = useState('')
@@ -29,7 +29,7 @@ export default function BatchPage({ showToast }) {
   const logsEndRef = useRef(null)
   const cancelRef = useRef(false)
 
-  // Scroll logs to bottom
+  // Desplazamiento automático de la consola hacia abajo al recibir nuevas líneas
   useEffect(() => {
     if (logsEndRef.current) {
       logsEndRef.current.scrollIntoView({ behavior: 'smooth' })
@@ -116,7 +116,7 @@ export default function BatchPage({ showToast }) {
       totalOriginalSize += file.size
 
       try {
-        // Step 1: Read original image as Data URL
+        // Paso 1: Leer el archivo original como URL de datos (Base64)
         let currentSrc = await new Promise((resolve, reject) => {
           const reader = new FileReader()
           reader.onload = (e) => resolve(e.target.result)
@@ -124,7 +124,7 @@ export default function BatchPage({ showToast }) {
           reader.readAsDataURL(file)
         })
 
-        // Step 2: Remove background if selected
+        // Paso 2: Eliminación automática de fondo (si el usuario activó la opción)
         if (options.removeBackground) {
           addLog(`   └─ Quitando fondo mediante IA... (esto puede tardar unos segundos)`)
           const bgBlob = await removeBackground(currentSrc)
@@ -132,14 +132,14 @@ export default function BatchPage({ showToast }) {
           addLog(`   └─ Fondo eliminado con éxito`)
         }
 
-        // Step 3: Convert to WebP if selected
+        // Paso 3: Conversión y optimización a formato WebP
         if (options.convertToWebp) {
           addLog(`   └─ Convirtiendo a WebP (Calidad: ${Math.round(options.quality * 100)}%)...`)
           const originalBlob = await getBlobFromSrc(currentSrc)
           const webpBlob = await blobToWebP(originalBlob, { quality: options.quality })
           currentSrc = await blobToDataURL(webpBlob)
           
-          // Calculate processed size from base64 length
+          // Estimamos el tamaño real del archivo optimizado desde el string base64
           const base64Data = currentSrc.split(',')[1]
           const processedBytes = Math.round((base64Data.length * 3) / 4)
           totalProcessedSize += processedBytes
@@ -147,7 +147,7 @@ export default function BatchPage({ showToast }) {
           const reduction = ((file.size - processedBytes) / file.size * 100).toFixed(0)
           addLog(`   └─ Guardado en WebP (${formatSize(processedBytes)}) | Reducción: -${reduction}%`)
         } else {
-          // Calculate size from final state if WebP not selected but bg removed
+          // Si no se convirtió a WebP, calculamos el peso resultante del corte del fondo
           const base64Data = currentSrc.split(',')[1]
           const processedBytes = base64Data ? Math.round((base64Data.length * 3) / 4) : file.size
           totalProcessedSize += processedBytes
@@ -192,7 +192,7 @@ export default function BatchPage({ showToast }) {
       const extension = options.convertToWebp ? 'webp' : (originalName.split('.').pop() || 'png')
       const newName = `${nameWithoutExt}_optimizado.${extension}`
 
-      // Extract base64 content from the Data URL
+      // Extraemos solo el bloque base64 para poder meterlo en el ZIP
       const base64Content = img.src.split(',')[1]
       folder.file(newName, base64Content, { base64: true })
     })
@@ -227,7 +227,7 @@ export default function BatchPage({ showToast }) {
     <div className="flex-1 flex flex-col items-center justify-center p-6 relative">
       <div className="w-full max-w-2xl z-10">
         
-        {/* STEP 1: SELECT FOLDER AND CONFIG OPTIONS */}
+        {/* PASO 1: SELECCIONAR CARPETA Y CONFIGURAR AUTOMATIZACIÓN */}
         {step === 'select' && (
           <div className="space-y-6">
             <div className="mb-4 text-center">
@@ -239,16 +239,17 @@ export default function BatchPage({ showToast }) {
               </p>
             </div>
 
-            {/* Folder Select DropZone (Clickable only if files.length === 0) */}
+            {/* Zona interactiva para soltar/seleccionar carpetas (solo disponible si no hay archivos cargados) */}
             {files.length === 0 ? (
               <div
                 onClick={() => fileInputRef.current.click()}
-                className="relative group border-2 border-dashed border-slate-800 hover:border-indigo-500/60 bg-slate-900/20 hover:bg-slate-900/40 rounded-3xl p-8 text-center transition-all duration-300 ease-out cursor-pointer flex flex-col items-center justify-center min-h-[220px] hover:shadow-[0_0_50px_-12px_rgba(99,102,241,0.25)]"
+                className="apple-glass apple-glass-hover group rounded-3xl p-8 text-center cursor-pointer flex flex-col items-center justify-center min-h-[220px] border-dashed border-slate-700/60 hover:border-solid hover:border-indigo-500/30"
               >
-                <div className="flex flex-col items-center space-y-4">
+                <div className="apple-glass-backdrop"></div>
+                <div className="relative z-10 flex flex-col items-center space-y-4">
                   <div className="relative">
                     <div className="absolute inset-0 bg-indigo-500/10 rounded-2xl blur-lg group-hover:bg-indigo-500/20 transition-all duration-300"></div>
-                    <div className="relative w-16 h-16 bg-slate-900 border border-slate-800 rounded-2xl flex items-center justify-center group-hover:border-indigo-500/50 group-hover:scale-105 transition-all duration-300">
+                    <div className="relative w-16 h-16 apple-glass rounded-2xl flex items-center justify-center border-white/5 group-hover:border-indigo-500/40 group-hover:scale-105 transition-all duration-300">
                       <svg className="w-8 h-8 text-slate-400 group-hover:text-indigo-400 transition-colors duration-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
                       </svg>
@@ -275,9 +276,11 @@ export default function BatchPage({ showToast }) {
                 />
               </div>
             ) : (
-              /* Non-clickable Active Folder Card when folder is in progress */
-              <div className="relative border border-indigo-500/30 bg-slate-900/40 backdrop-blur-xl rounded-3xl p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
-                <div className="flex items-center space-x-4 text-left">
+              /* Vista de carpeta activa y cargada en memoria, sin opción de recarga */
+              <div className="apple-glass rounded-3xl p-6 flex flex-col sm:flex-row items-center justify-between gap-4 border-indigo-500/20">
+                <div className="apple-glass-backdrop"></div>
+                <div className="relative z-10 flex flex-col sm:flex-row items-center justify-between w-full gap-4">
+                  <div className="flex items-center space-x-4 text-left">
                   <div className="w-14 h-14 bg-indigo-500/10 border border-indigo-500/20 rounded-2xl flex items-center justify-center shrink-0">
                     <svg className="w-7 h-7 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5M5 19v-4a2 2 0 00-2-2m14 0h2a2 2 0 002-2V7a2 2 0 00-2-2h-3.5a1 1 0 01-.8-.4l-.9-1.2A1 1 0 0013.5 3h-3a1 1 0 00-.8.4l-.9 1.2a1 1 0 01-.8.4H5" />
@@ -303,18 +306,21 @@ export default function BatchPage({ showToast }) {
                   </svg>
                   Eliminar Carpeta
                 </button>
+                </div>
               </div>
             )}
 
-            {/* Automation Options Panel */}
+            {/* Panel de Opciones de Automatización (solo visible tras cargar las imágenes) */}
             {files.length > 0 && (
-              <div className="bg-slate-900/40 border border-slate-900 rounded-3xl p-6 space-y-5 backdrop-blur-xl">
+              <div className="apple-glass rounded-3xl p-6 space-y-5">
+                <div className="apple-glass-backdrop"></div>
+                <div className="relative z-10 space-y-5">
                 <h4 className="text-sm font-bold text-indigo-300 tracking-wider uppercase">
                   Opciones de Automatización
                 </h4>
 
                 <div className="space-y-4">
-                  {/* Action 1: WebP Conversion */}
+                  {/* Acción A: Conversión de Formato a WebP */}
                   <div className="space-y-3">
                     <label className="flex items-center space-x-3 cursor-pointer">
                       <input
@@ -351,7 +357,7 @@ export default function BatchPage({ showToast }) {
                     )}
                   </div>
 
-                  {/* Action 2: Background Removal */}
+                  {/* Acción B: Remover fondo de forma automática por IA local */}
                   <div className="space-y-2">
                     <label className="flex items-center space-x-3 cursor-pointer">
                       <input
@@ -378,7 +384,7 @@ export default function BatchPage({ showToast }) {
                   </div>
                 </div>
 
-                {/* Submit button */}
+                {/* Botón de envío principal para arrancar el procesamiento */}
                 <div className="pt-2">
                   <button
                     onClick={handleStartProcessing}
@@ -391,22 +397,25 @@ export default function BatchPage({ showToast }) {
                   </button>
                 </div>
               </div>
-            )}
+            </div>
+          )}
           </div>
         )}
 
 
-        {/* STEP 2: PROCESSING BATCH STATE */}
+        {/* PASO 2: VISTA DE PROCESAMIENTO EN PROGRESO */}
         {step === 'processing' && (
           <div className="space-y-6">
-            <div className="bg-slate-900/40 border border-slate-900 rounded-3xl p-6 space-y-6 backdrop-blur-xl flex flex-col items-center">
+            <div className="apple-glass rounded-3xl p-6 flex flex-col items-center">
+              <div className="apple-glass-backdrop"></div>
+              <div className="relative z-10 w-full flex flex-col items-center space-y-6">
               
               <div className="w-full flex items-center justify-between text-sm">
                 <span className="font-semibold text-slate-300">Progreso del Lote</span>
                 <span className="text-indigo-400 font-bold">{currentIndex + 1} de {files.length}</span>
               </div>
 
-              {/* Progress Bar */}
+              {/* Barra de Progreso Acumulado */}
               <div className="w-full h-3 bg-slate-950 rounded-full border border-slate-850 overflow-hidden relative">
                 <div
                   className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 rounded-full shadow-[0_0_12px_rgba(99,102,241,0.5)] transition-all duration-300"
@@ -414,7 +423,7 @@ export default function BatchPage({ showToast }) {
                 ></div>
               </div>
 
-              {/* Current Action / Activity Indicator */}
+              {/* Indicador de Acción y Archivo en Proceso */}
               <div className="flex items-center space-x-3 w-full bg-slate-950/40 border border-slate-850 px-4 py-3 rounded-2xl">
                 <div className="w-5 h-5 border-2 border-indigo-500/20 border-t-indigo-400 rounded-full animate-spin shrink-0"></div>
                 <div className="flex-1 text-left">
@@ -423,7 +432,7 @@ export default function BatchPage({ showToast }) {
                 </div>
               </div>
 
-              {/* Terminal Logs Window */}
+              {/* Consola del Sistema en Tiempo Real */}
               <div className="w-full space-y-2">
                 <div className="flex items-center justify-between px-1">
                   <span className="text-xs font-semibold text-slate-400 font-mono">Consola de Salida</span>
@@ -443,16 +452,19 @@ export default function BatchPage({ showToast }) {
               >
                 Cancelar Operación
               </button>
+              </div>
             </div>
           </div>
         )}
 
-        {/* STEP 3: BATCH COMPLETE VIEW */}
+        {/* PASO 3: VISTA DE AUTOMATIZACIÓN COMPLETADA */}
         {step === 'completed' && (
           <div className="space-y-6">
-            <div className="bg-slate-900/40 border border-slate-900 rounded-3xl p-8 space-y-6 backdrop-blur-xl flex flex-col items-center text-center">
+            <div className="apple-glass rounded-3xl p-8 flex flex-col items-center text-center">
+              <div className="apple-glass-backdrop"></div>
+              <div className="relative z-10 w-full flex flex-col items-center space-y-6">
               
-              {/* Checkmark animation container */}
+              {/* Animación del checkmark de éxito */}
               <div className="relative mb-2">
                 <div className="absolute inset-0 bg-emerald-500/10 rounded-full blur-2xl animate-pulse"></div>
                 <div className="relative w-20 h-20 bg-emerald-950/40 border border-emerald-500/30 rounded-full flex items-center justify-center shadow-lg shadow-emerald-500/10">
@@ -469,7 +481,7 @@ export default function BatchPage({ showToast }) {
                 </p>
               </div>
 
-              {/* Stat Grid Card */}
+              {/* Cuadrícula de estadísticas finales del procesamiento */}
               <div className="grid grid-cols-3 gap-4 w-full bg-slate-950/50 border border-slate-900 rounded-2xl p-4">
                 <div className="flex flex-col">
                   <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Imágenes</span>
@@ -485,7 +497,7 @@ export default function BatchPage({ showToast }) {
                 </div>
               </div>
 
-              {/* Highlight savings banner */}
+              {/* Banner destacado indicando el ahorro de espacio obtenido */}
               {stats.originalSize > 0 && stats.processedSize < stats.originalSize && (
                 <div className="w-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs font-semibold py-3 px-4 rounded-xl flex items-center justify-center gap-2">
                   <svg className="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -495,7 +507,7 @@ export default function BatchPage({ showToast }) {
                 </div>
               )}
 
-              {/* Action buttons */}
+              {/* Botones de acción finales */}
               <div className="pt-2 flex gap-3 w-full">
                 <button
                   onClick={handleReset}
@@ -516,8 +528,8 @@ export default function BatchPage({ showToast }) {
                   </svg>
                   Guardar en Dispositivo
                 </button>
+                </div>
               </div>
-
             </div>
           </div>
         )}

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { removeBackground } from '@imgly/background-removal'
 import { blobToWebP } from 'webp-converter-browser'
 import { copyImageToClipboard } from '../utils/clipboard'
@@ -9,6 +9,129 @@ export default function DropZonePage({ onAddImage, showToast }) {
   const [isProcessing, setIsProcessing] = useState(false)
   const [quality, setQuality] = useState(0.75)
   const fileInputRef = useRef(null)
+
+  // Estados para manejar los parámetros de Chroma Key (pantalla verde/azul/etc.)
+  const [isChromaMode, setIsChromaMode] = useState(false)
+  const [chromaColor, setChromaColor] = useState('#00ff00')
+  const [chromaSimilarity, setChromaSimilarity] = useState(30)
+  const [chromaSmoothness, setChromaSmoothness] = useState(10)
+  const [chromaSpill, setChromaSpill] = useState(true)
+  const canvasRef = useRef(null)
+  const originalImgRef = useRef(null)
+
+  const initChromaCanvas = () => {
+    const canvas = canvasRef.current
+    const img = originalImgRef.current
+    if (!canvas || !img) return
+    canvas.width = img.naturalWidth
+    canvas.height = img.naturalHeight
+    const ctx = canvas.getContext('2d')
+    ctx.drawImage(img, 0, 0)
+    updateChromaPreview()
+  }
+
+  const updateChromaPreview = useCallback(() => {
+    const canvas = canvasRef.current
+    const img = originalImgRef.current
+    if (!canvas || !img) return
+    
+    const ctx = canvas.getContext('2d')
+    const w = img.naturalWidth
+    const h = img.naturalHeight
+    
+    ctx.drawImage(img, 0, 0)
+    const imageData = ctx.getImageData(0, 0, w, h)
+    const data = imageData.data
+    
+    const rHex = parseInt(chromaColor.slice(1, 3), 16)
+    const gHex = parseInt(chromaColor.slice(3, 5), 16)
+    const bHex = parseInt(chromaColor.slice(5, 7), 16)
+    
+    const sim = (chromaSimilarity / 100) * 255
+    const smooth = (chromaSmoothness / 100) * 255
+    
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i]
+      const g = data[i+1]
+      const b = data[i+2]
+      const a = data[i+3]
+      
+      if (a === 0) continue
+      
+      const dist = Math.sqrt((r - rHex)**2 + (g - gHex)**2 + (b - bHex)**2)
+      
+      let alpha = 255
+      if (dist < sim) {
+        alpha = 0
+      } else if (dist < sim + smooth) {
+        alpha = Math.round(((dist - sim) / (smooth || 1)) * 255)
+      }
+      
+      data[i+3] = Math.min(a, alpha)
+      
+      // Algoritmo para mitigar el derrame de color verde/azul en los bordes de la imagen
+      if (chromaSpill && alpha < 255) {
+        if (gHex > rHex && gHex > bHex) {
+          const avg = (r + b) / 2
+          if (g > avg) {
+            const blend = 1 - (alpha / 255)
+            data[i+1] = Math.round(g * (1 - blend) + avg * blend)
+          }
+        } else if (bHex > rHex && bHex > gHex) {
+          const avg = (r + g) / 2
+          if (b > avg) {
+            const blend = 1 - (alpha / 255)
+            data[i+2] = Math.round(b * (1 - blend) + avg * blend)
+          }
+        } else if (rHex > gHex && rHex > bHex) {
+          const avg = (g + b) / 2
+          if (r > avg) {
+            const blend = 1 - (alpha / 255)
+            data[i] = Math.round(r * (1 - blend) + avg * blend)
+          }
+        }
+      }
+    }
+    ctx.putImageData(imageData, 0, 0)
+  }, [chromaColor, chromaSimilarity, chromaSmoothness, chromaSpill])
+
+  useEffect(() => {
+    if (isChromaMode) {
+      updateChromaPreview()
+    }
+  }, [isChromaMode, updateChromaPreview])
+
+  const handleCanvasClick = (e) => {
+    const canvas = canvasRef.current
+    const img = originalImgRef.current
+    if (!canvas || !img) return
+    
+    const rect = canvas.getBoundingClientRect()
+    const x = Math.floor(((e.clientX - rect.left) / rect.width) * canvas.width)
+    const y = Math.floor(((e.clientY - rect.top) / rect.height) * canvas.height)
+    
+    // Usamos un lienzo diminuto de 1x1 píxeles para leer el color exacto que el usuario seleccionó
+    const tempCanvas = document.createElement('canvas')
+    tempCanvas.width = 1
+    tempCanvas.height = 1
+    const tempCtx = tempCanvas.getContext('2d')
+    tempCtx.drawImage(img, x, y, 1, 1, 0, 0, 1, 1)
+    const pixel = tempCtx.getImageData(0, 0, 1, 1).data
+    
+    const hex = '#' + Array.from(pixel.slice(0, 3)).map(val => val.toString(16).padStart(2, '0')).join('')
+    setChromaColor(hex)
+    showToast(`Color seleccionado: ${hex.toUpperCase()}`, 'success')
+  }
+
+  const handleApplyChroma = () => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const dataUrl = canvas.toDataURL('image/png')
+    setImageSrc(dataUrl)
+    setIsChromaMode(false)
+    showToast('¡Fondo eliminado con Chroma Key!', 'success')
+  }
+
 
   const getFileSize = (srcString) => {
     if (!srcString) return '0 KB'
@@ -47,6 +170,7 @@ export default function DropZonePage({ onAddImage, showToast }) {
     const reader = new FileReader()
     reader.onload = (e) => {
       setImageSrc(e.target.result)
+      setIsChromaMode(false) // Reseteamos el modo chroma para evitar mezclar configuraciones de imágenes anteriores
       showToast('Imagen cargada correctamente', 'success')
     }
     reader.readAsDataURL(file)
@@ -147,19 +271,21 @@ export default function DropZonePage({ onAddImage, showToast }) {
               handleFile(e.dataTransfer.files[0])
             }
           }}
-          className={`relative group border-2 rounded-3xl p-10 text-center transition-all duration-500 ease-out cursor-pointer flex flex-col items-center justify-center min-h-[360px] ${
+          className={`apple-glass group transition-all duration-500 ease-out cursor-pointer flex flex-col items-center justify-center min-h-[360px] rounded-3xl p-10 text-center ${
             imageSrc
-              ? 'border-indigo-500/30 bg-slate-900/40 backdrop-blur-xl'
+              ? 'border-indigo-500/20'
               : isDragOver
-              ? 'border-indigo-500 bg-indigo-950/20 shadow-[0_0_60px_-10px_rgba(99,102,241,0.4)] scale-[1.01]'
-              : 'border-dashed border-slate-800 hover:border-indigo-500/60 bg-slate-900/20 hover:bg-slate-900/40 backdrop-blur-xl hover:shadow-[0_0_50px_-12px_rgba(99,102,241,0.25)]'
+              ? 'apple-glass-active scale-[1.01]'
+              : 'apple-glass-hover border-dashed border-slate-700/60 hover:border-solid hover:border-indigo-500/30'
           }`}
         >
+          {/* Capa de fondo con efecto de desenfoque de vidrio templado (estilo Apple Glass) */}
+          <div className="apple-glass-backdrop"></div>
           {!imageSrc ? (
-            <div className="flex flex-col items-center space-y-6">
+            <div className="relative z-10 flex flex-col items-center space-y-6">
               <div className="relative">
-                <div className="absolute inset-0 bg-indigo-500/10 rounded-3xl blur-xl group-hover:bg-indigo-500/20 transition-all duration-500"></div>
-                <div className="relative w-20 h-20 bg-slate-900 border border-slate-800 rounded-3xl flex items-center justify-center group-hover:border-indigo-500/50 group-hover:scale-105 group-hover:shadow-[0_0_30px_rgba(99,102,241,0.15)] transition-all duration-500">
+                <div className="absolute inset-0 bg-indigo-500/15 rounded-3xl blur-2xl group-hover:bg-indigo-500/25 transition-all duration-500"></div>
+                <div className="relative w-20 h-20 apple-glass rounded-3xl flex items-center justify-center border-white/5 group-hover:border-indigo-500/40 group-hover:scale-105 group-hover:shadow-[0_8px_20px_rgba(0,0,0,0.4),0_0_30px_rgba(99,102,241,0.15)] transition-all duration-500">
                   <svg className="w-10 h-10 text-slate-400 group-hover:text-indigo-400 transition-colors duration-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
                   </svg>
@@ -179,8 +305,141 @@ export default function DropZonePage({ onAddImage, showToast }) {
                 <p className="text-slate-500 text-xs mt-1">Soporta PNG, JPG, WebP</p>
               </div>
             </div>
+          ) : isChromaMode ? (
+            <div className="relative z-10 w-full flex flex-col items-center space-y-6">
+              {/* Instrucciones de ayuda para el recorte de Chroma Key */}
+              <div className="text-center space-y-1">
+                <h2 className="text-2xl font-bold tracking-tight bg-gradient-to-r from-indigo-200 to-slate-200 bg-clip-text text-transparent">
+                  Editor de Chroma Key
+                </h2>
+                <p className="text-slate-400 text-xs max-w-xs mx-auto">
+                  Haz clic en cualquier parte de la imagen para seleccionar el color de fondo
+                </p>
+              </div>
+
+              {/* Contenedor del lienzo interactivo */}
+              <div className="relative w-full aspect-video overflow-hidden rounded-2xl border border-slate-800 shadow-2xl bg-checkerboard flex items-center justify-center p-4">
+                <canvas
+                  ref={canvasRef}
+                  onClick={handleCanvasClick}
+                  className="max-w-full max-h-[260px] object-contain rounded-lg cursor-crosshair hover:ring-2 hover:ring-indigo-500/50 transition-all duration-200"
+                />
+                
+                <img
+                  ref={originalImgRef}
+                  src={imageSrc}
+                  className="hidden"
+                  alt="Original"
+                  onLoad={initChromaCanvas}
+                />
+              </div>
+
+              {/* Ajustes avanzados de Chroma Key */}
+              <div className="w-full bg-slate-900/50 border border-slate-800/80 rounded-2xl p-4 flex flex-col space-y-4">
+                {/* Selector de color de fondo */}
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/60 pb-3">
+                  <div className="flex items-center space-x-3">
+                    <span className="text-xs font-semibold text-slate-300">Color seleccionado:</span>
+                    <div className="flex items-center space-x-2">
+                      <input
+                        type="color"
+                        value={chromaColor}
+                        onChange={(e) => setChromaColor(e.target.value)}
+                        className="w-8 h-8 rounded-lg bg-transparent border-0 cursor-pointer p-0"
+                      />
+                      <span className="text-xs font-mono font-bold text-indigo-400 bg-indigo-500/10 px-2.5 py-0.5 rounded-full border border-indigo-500/20">
+                        {chromaColor.toUpperCase()}
+                      </span>
+                    </div>
+                  </div>
+                  
+                  {/* Colores preestablecidos más comunes */}
+                  <div className="flex items-center gap-1.5">
+                    {['#00ff00', '#0000ff', '#ff0000', '#ffffff', '#000000'].map((color) => (
+                      <button
+                        key={color}
+                        onClick={() => setChromaColor(color)}
+                        className={`w-6 h-6 rounded-full border transition-all duration-200 cursor-pointer ${
+                          chromaColor === color ? 'border-indigo-400 scale-110 ring-2 ring-indigo-500/30' : 'border-slate-800 hover:scale-105'
+                        }`}
+                        style={{ backgroundColor: color }}
+                        title={color}
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                {/* Control de Tolerancia (Similitud del color) */}
+                <div className="flex flex-col space-y-2">
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="font-semibold text-slate-300">Tolerancia (Similitud)</span>
+                    <span className="font-bold text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded-full border border-indigo-500/20">{chromaSimilarity}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="1"
+                    max="100"
+                    value={chromaSimilarity}
+                    onChange={(e) => setChromaSimilarity(parseInt(e.target.value))}
+                    className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500 hover:accent-indigo-400 transition-colors duration-200"
+                  />
+                </div>
+
+                {/* Control de Suavizado (Desvanecimiento de bordes) */}
+                <div className="flex flex-col space-y-2">
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="font-semibold text-slate-300">Suavizado (Smoothness)</span>
+                    <span className="font-bold text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded-full border border-indigo-500/20">{chromaSmoothness}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={chromaSmoothness}
+                    onChange={(e) => setChromaSmoothness(parseInt(e.target.value))}
+                    className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500 hover:accent-indigo-400 transition-colors duration-200"
+                  />
+                </div>
+
+                {/* Control de reducción de derrame cromático */}
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-300">Reducción de Spill (Derrame)</span>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={chromaSpill}
+                      onChange={(e) => setChromaSpill(e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-400 after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600 peer-checked:after:bg-white peer-checked:after:border-indigo-600"></div>
+                  </label>
+                </div>
+              </div>
+
+              {/* Botones de acción inferiores */}
+              <div className="flex gap-3 w-full">
+                <button
+                  onClick={() => setIsChromaMode(false)}
+                  className="flex-1 py-2.5 bg-slate-900/60 hover:bg-slate-800 text-slate-400 hover:text-slate-200 rounded-xl text-sm font-medium border border-slate-800/80 hover:border-slate-700/80 transition-all duration-200 cursor-pointer flex items-center justify-center gap-2"
+                >
+                  <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                  Cancelar
+                </button>
+                <button
+                  onClick={handleApplyChroma}
+                  className="flex-1 py-2.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white rounded-xl text-sm font-medium transition-all duration-200 shadow-md shadow-indigo-600/25 hover:shadow-indigo-600/35 flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
+                  </svg>
+                  Aplicar Cambios
+                </button>
+              </div>
+            </div>
           ) : (
-            <div className="w-full flex flex-col items-center space-y-6">
+            <div className="relative z-10 w-full flex flex-col items-center space-y-6">
               <div className="relative w-full aspect-video overflow-hidden rounded-2xl border border-slate-800 shadow-2xl bg-checkerboard flex items-center justify-center p-4">
                 <img
                   className={`max-w-full max-h-[260px] object-contain rounded-lg transition-all duration-300 ${
@@ -190,19 +449,19 @@ export default function DropZonePage({ onAddImage, showToast }) {
                   alt="Vista previa"
                 />
                 
-                {/* Size Badge */}
+                {/* Indicador del tamaño actual del archivo cargado */}
                 {!isProcessing && (
                   <div className="absolute top-3 right-3 bg-slate-950/80 backdrop-blur-md px-3 py-1 rounded-xl border border-slate-800/80 text-[11px] font-semibold text-slate-300 font-mono shadow-lg">
                     {getFileSize(imageSrc)}
                   </div>
                 )}
 
-                {/* Scanner Laser effect */}
+                {/* Efecto visual de rayo láser escaneando la imagen */}
                 {isProcessing && (
                   <div className="absolute left-0 right-0 h-0.5 bg-indigo-400 shadow-[0_0_12px_#818cf8] animate-scan pointer-events-none"></div>
                 )}
 
-                {/* Processing Overlay */}
+                {/* Capa de carga mientras la IA local procesa el recorte */}
                 {isProcessing && (
                   <div className="absolute inset-0 bg-slate-950/50 backdrop-blur-xs rounded-2xl flex flex-col items-center justify-center space-y-4">
                     <div className="w-10 h-10 border-3 border-indigo-500/20 border-t-indigo-400 rounded-full animate-spin"></div>
@@ -213,7 +472,7 @@ export default function DropZonePage({ onAddImage, showToast }) {
                 )}
               </div>
 
-              {/* Compression Slider Controls */}
+              {/* Controles deslizantes para ajustar la calidad final de compresión de WebP */}
               <div className="w-full bg-slate-900/50 border border-slate-800/80 rounded-2xl p-4 flex flex-col space-y-3">
                 <div className="flex justify-between items-center">
                   <span className="text-xs font-semibold text-slate-300">Calidad de Compresión WebP</span>
@@ -268,6 +527,21 @@ export default function DropZonePage({ onAddImage, showToast }) {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
                   </svg>
                   Copiar
+                </button>
+
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setIsChromaMode(true)
+                  }}
+                  disabled={isProcessing}
+                  className="px-4 py-2.5 bg-violet-950/40 hover:bg-violet-900/50 text-violet-300 hover:text-violet-200 rounded-xl text-sm font-medium border border-violet-900/40 hover:border-violet-850/65 transition-all duration-200 disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+                >
+                  <svg className="w-4 h-4 text-violet-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                  </svg>
+                  Chroma Key
                 </button>
 
                 <button

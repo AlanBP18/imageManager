@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import DropZonePage from './pages/DropZonePage'
 import BatchPage from './pages/BatchPage'
 import GalleryPage from './pages/GalleryPage'
+import GooeyBackground from './components/GooeyBackground'
 
 export default function App() {
   const [currentPage, setCurrentPage] = useState('dropzone')
@@ -50,12 +51,11 @@ export default function App() {
   }
 
   return (
-    <div className="bg-slate-950 text-slate-100 min-h-screen flex flex-col overflow-hidden relative selection:bg-indigo-500/30 selection:text-indigo-200">
-      {/* Decorative Background Glows */}
-      <div className="absolute top-1/4 left-1/4 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-indigo-500/10 rounded-full blur-[150px] pointer-events-none"></div>
-      <div className="absolute bottom-1/4 right-1/4 translate-x-1/2 translate-y-1/2 w-[500px] h-[500px] bg-purple-500/10 rounded-full blur-[150px] pointer-events-none"></div>
+    <div className="bg-slate-900 text-slate-100 min-h-screen flex flex-col overflow-hidden relative selection:bg-indigo-500/30 selection:text-indigo-200">
+      {/* Fondo dinámico estilo lámpara de lava (burbujas gooey) */}
+      <GooeyBackground />
 
-      <header className="border-b border-slate-900 bg-slate-950/80 backdrop-blur-xl sticky top-0 z-50">
+      <header className="border-b border-slate-800/50 bg-slate-900/80 backdrop-blur-xl sticky top-0 z-50">
         <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center space-x-3">
             <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-purple-600 flex items-center justify-center font-bold text-white shadow-lg shadow-indigo-600/30">
@@ -120,7 +120,7 @@ export default function App() {
       </main>
 
 
-      {/* Toast Notification */}
+      {/* Notificaciones flotantes (toast) tipo alerta en la esquina inferior derecha */}
       {toast && (
         <div className="fixed bottom-6 right-6 z-50 animate-slide-up">
           <div className={`flex items-center space-x-3 px-4 py-3 rounded-2xl border backdrop-blur-xl shadow-2xl transition-all duration-300 ${
