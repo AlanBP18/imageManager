@@ -57,11 +57,9 @@ export default function App() {
 
       <header className="border-b border-slate-800/50 bg-slate-900/80 backdrop-blur-xl sticky top-0 z-50">
         <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-purple-600 flex items-center justify-center font-bold text-white shadow-lg shadow-indigo-600/30">
-              I
-            </div>
-            <span className="font-semibold text-lg tracking-tight bg-gradient-to-r from-indigo-200 to-slate-200 bg-clip-text text-transparent">
+          <div className="flex items-center space-x-3 cursor-pointer" onClick={() => setCurrentPage('dropzone')}>
+            <img src="/logo.png" alt="Logo" className="w-10 h-10 object-contain drop-shadow-[0_0_12px_rgba(99,102,241,0.4)] transition-transform hover:scale-105" />
+            <span className="font-bold text-xl tracking-tight bg-gradient-to-r from-indigo-200 via-purple-200 to-slate-100 bg-clip-text text-transparent">
               ImageManager
             </span>
           </div>
