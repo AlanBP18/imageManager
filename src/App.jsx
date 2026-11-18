@@ -110,7 +110,7 @@ export default function App() {
           <DropZonePage onAddImage={handleAddImage} showToast={showToast} />
         </div>
         <div className={currentPage === 'batch' ? 'flex-1 flex flex-col' : 'hidden'}>
-          <BatchPage showToast={showToast} />
+          <BatchPage showToast={showToast} onAddMultipleImages={handleAddMultipleImages} />
         </div>
         <div className={currentPage === 'gallery' ? 'flex-1 flex flex-col' : 'hidden'}>
           <GalleryPage images={images} onDeleteImage={handleDeleteImage} showToast={showToast} />

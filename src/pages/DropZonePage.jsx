@@ -2,12 +2,16 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { removeBackground } from '@imgly/background-removal'
 import { blobToWebP } from 'webp-converter-browser'
 import { copyImageToClipboard } from '../utils/clipboard'
+import { rasterizeImageToSvg } from '../utils/svgConverter'
+import { downloadImageQuick, getImageFormatAndSize } from '../utils/imageDownloader'
 
 export default function DropZonePage({ onAddImage, showToast }) {
   const [imageSrc, setImageSrc] = useState(null)
+  const [fileName, setFileName] = useState('imagen')
   const [isDragOver, setIsDragOver] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
   const [quality, setQuality] = useState(0.75)
+  const [quickDownloadFormat, setQuickDownloadFormat] = useState('svg')
   const fileInputRef = useRef(null)
 
   // Estados para manejar los parámetros de Chroma Key (pantalla verde/azul/etc.)
@@ -110,7 +114,6 @@ export default function DropZonePage({ onAddImage, showToast }) {
     const x = Math.floor(((e.clientX - rect.left) / rect.width) * canvas.width)
     const y = Math.floor(((e.clientY - rect.top) / rect.height) * canvas.height)
     
-    // Usamos un lienzo diminuto de 1x1 píxeles para leer el color exacto que el usuario seleccionó
     const tempCanvas = document.createElement('canvas')
     tempCanvas.width = 1
     tempCanvas.height = 1
@@ -129,22 +132,7 @@ export default function DropZonePage({ onAddImage, showToast }) {
     const dataUrl = canvas.toDataURL('image/png')
     setImageSrc(dataUrl)
     setIsChromaMode(false)
-    showToast('¡Fondo eliminado con Chroma Key!', 'success')
-  }
-
-
-  const getFileSize = (srcString) => {
-    if (!srcString) return '0 KB'
-    if (srcString.startsWith('blob:')) {
-      return 'Calculando...'
-    }
-    const base64Data = srcString.split(',')[1]
-    if (!base64Data) return 'Desconocido'
-    const sizeInBytes = Math.round((base64Data.length * 3) / 4)
-    if (sizeInBytes > 1024 * 1024) {
-      return `${(sizeInBytes / (1024 * 1024)).toFixed(1)} MB`
-    }
-    return `${Math.round(sizeInBytes / 1024)} KB`
+    showToast('¡Fondo eliminado con Chroma Key! (Transparencia aplicada)', 'success')
   }
 
   const blobToDataURL = (blob) => {
@@ -161,38 +149,43 @@ export default function DropZonePage({ onAddImage, showToast }) {
     return await response.blob()
   }
 
-
-  const handleFile = (file) => {
+  const handleFile = useCallback((file) => {
     if (!file.type.startsWith('image/')) {
       showToast('Por favor, selecciona un archivo de imagen válido.', 'error')
       return
     }
+
+    const baseName = file.name.substring(0, file.name.lastIndexOf('.')) || file.name
+    setFileName(baseName)
+
     const reader = new FileReader()
     reader.onload = (e) => {
       setImageSrc(e.target.result)
-      setIsChromaMode(false) // Reseteamos el modo chroma para evitar mezclar configuraciones de imágenes anteriores
+      setIsChromaMode(false)
       showToast('Imagen cargada correctamente', 'success')
     }
     reader.readAsDataURL(file)
-  }
+  }, [showToast])
 
-  const handlePaste = (e) => {
-    const items = e.clipboardData.items
+  const handlePaste = useCallback((e) => {
+    const items = e.clipboardData?.items
+    if (!items) return
     for (let i = 0; i < items.length; i++) {
       if (items[i].type.indexOf('image') !== -1) {
         const blob = items[i].getAsFile()
+        setFileName('imagen_pegada')
         handleFile(blob)
         break
       }
     }
-  }
+  }, [handleFile])
 
   useEffect(() => {
     window.addEventListener('paste', handlePaste)
     return () => {
       window.removeEventListener('paste', handlePaste)
     }
-  }, [])
+  }, [handlePaste])
 
   const handleSave = () => {
     if (imageSrc) {
@@ -218,11 +211,11 @@ export default function DropZonePage({ onAddImage, showToast }) {
     if (!imageSrc || isProcessing) return
     setIsProcessing(true)
     try {
-      showToast('Removiendo fondo de la imagen...', 'info')
+      showToast('Removiendo fondo mediante IA (conservando transparencias)...', 'info')
       const blob = await removeBackground(imageSrc)
       const dataUrl = await blobToDataURL(blob)
       setImageSrc(dataUrl)
-      showToast('¡Fondo eliminado con éxito!', 'success')
+      showToast('¡Fondo eliminado con éxito! Canal alfa activo.', 'success')
     } catch (error) {
       console.error('Error removing background:', error)
       showToast('Error al quitar el fondo. Inténtalo de nuevo.', 'error')
@@ -243,12 +236,46 @@ export default function DropZonePage({ onAddImage, showToast }) {
       showToast('¡Imagen convertida a WebP con éxito!', 'success')
     } catch (error) {
       console.error('Error converting to WebP:', error)
-      showToast('Error al convertir la imagen a WebP. Inténtalo de nuevo.', 'error')
+      showToast('Error al convertir la imagen a WebP.', 'error')
     } finally {
       setIsProcessing(false)
     }
   }
 
+  const handleConvertToSvg = async () => {
+    if (!imageSrc || isProcessing) return
+    setIsProcessing(true)
+    try {
+      showToast('Rasterizando imagen a SVG con transparencia...', 'info')
+      const { svgDataUrl } = await rasterizeImageToSvg(imageSrc, { title: fileName })
+      setImageSrc(svgDataUrl)
+      setQuickDownloadFormat('svg')
+      showToast('¡Imagen rasterizada en SVG con soporte de transparencias!', 'success')
+    } catch (error) {
+      console.error('Error rasterizing to SVG:', error)
+      showToast('Error al rasterizar a SVG. Inténtalo de nuevo.', 'error')
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  const handleQuickDownload = async (format = quickDownloadFormat) => {
+    if (!imageSrc || isProcessing) return
+    try {
+      showToast(`Descargando resultado en formato .${format.toUpperCase()}...`, 'info')
+      const result = await downloadImageQuick(imageSrc, {
+        filename: `${fileName}_resultado`,
+        format,
+        quality
+      })
+      showToast(`¡Descargado rápido: ${result.filename}!`, 'success')
+    } catch (error) {
+      console.error('Error en descarga rápida:', error)
+      showToast('Error al descargar la imagen. Inténtalo de nuevo.', 'error')
+    }
+  }
+
+  const imageInfo = getImageFormatAndSize(imageSrc)
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-6 relative">
@@ -271,7 +298,7 @@ export default function DropZonePage({ onAddImage, showToast }) {
               handleFile(e.dataTransfer.files[0])
             }
           }}
-          className={`apple-glass group transition-all duration-500 ease-out cursor-pointer flex flex-col items-center justify-center min-h-[360px] rounded-3xl p-10 text-center ${
+          className={`apple-glass group transition-all duration-500 ease-out cursor-pointer flex flex-col items-center justify-center min-h-[360px] rounded-3xl p-8 sm:p-10 text-center ${
             imageSrc
               ? 'border-indigo-500/20'
               : isDragOver
@@ -279,7 +306,6 @@ export default function DropZonePage({ onAddImage, showToast }) {
               : 'apple-glass-hover border-dashed border-slate-700/60 hover:border-solid hover:border-indigo-500/30'
           }`}
         >
-          {/* Capa de fondo con efecto de desenfoque de vidrio templado (estilo Apple Glass) */}
           <div className="apple-glass-backdrop"></div>
           {!imageSrc ? (
             <div className="relative z-10 flex flex-col items-center space-y-6">
@@ -302,22 +328,24 @@ export default function DropZonePage({ onAddImage, showToast }) {
                   </kbd>{' '}
                   para pegar
                 </p>
-                <p className="text-slate-500 text-xs mt-1">Soporta PNG, JPG, WebP</p>
+                <div className="flex flex-wrap items-center justify-center gap-2 pt-1 text-slate-500 text-xs">
+                  <span className="px-2 py-0.5 rounded-md bg-slate-950/60 border border-slate-800/80 font-mono">PNG (Transparente)</span>
+                  <span className="px-2 py-0.5 rounded-md bg-slate-950/60 border border-slate-800/80 font-mono">SVG</span>
+                  <span className="px-2 py-0.5 rounded-md bg-slate-950/60 border border-slate-800/80 font-mono">WebP / JPG</span>
+                </div>
               </div>
             </div>
           ) : isChromaMode ? (
             <div className="relative z-10 w-full flex flex-col items-center space-y-6">
-              {/* Instrucciones de ayuda para el recorte de Chroma Key */}
               <div className="text-center space-y-1">
                 <h2 className="text-2xl font-bold tracking-tight bg-gradient-to-r from-indigo-200 to-slate-200 bg-clip-text text-transparent">
                   Editor de Chroma Key
                 </h2>
                 <p className="text-slate-400 text-xs max-w-xs mx-auto">
-                  Haz clic en cualquier parte de la imagen para seleccionar el color de fondo
+                  Haz clic en cualquier parte de la imagen para seleccionar el color de fondo a transparentar
                 </p>
               </div>
 
-              {/* Contenedor del lienzo interactivo */}
               <div className="relative w-full aspect-video overflow-hidden rounded-2xl border border-slate-800 shadow-2xl bg-checkerboard flex items-center justify-center p-4">
                 <canvas
                   ref={canvasRef}
@@ -334,9 +362,7 @@ export default function DropZonePage({ onAddImage, showToast }) {
                 />
               </div>
 
-              {/* Ajustes avanzados de Chroma Key */}
               <div className="w-full bg-slate-900/50 border border-slate-800/80 rounded-2xl p-4 flex flex-col space-y-4">
-                {/* Selector de color de fondo */}
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/60 pb-3">
                   <div className="flex items-center space-x-3">
                     <span className="text-xs font-semibold text-slate-300">Color seleccionado:</span>
@@ -353,7 +379,6 @@ export default function DropZonePage({ onAddImage, showToast }) {
                     </div>
                   </div>
                   
-                  {/* Colores preestablecidos más comunes */}
                   <div className="flex items-center gap-1.5">
                     {['#00ff00', '#0000ff', '#ff0000', '#ffffff', '#000000'].map((color) => (
                       <button
@@ -369,7 +394,6 @@ export default function DropZonePage({ onAddImage, showToast }) {
                   </div>
                 </div>
 
-                {/* Control de Tolerancia (Similitud del color) */}
                 <div className="flex flex-col space-y-2">
                   <div className="flex justify-between items-center text-xs">
                     <span className="font-semibold text-slate-300">Tolerancia (Similitud)</span>
@@ -385,7 +409,6 @@ export default function DropZonePage({ onAddImage, showToast }) {
                   />
                 </div>
 
-                {/* Control de Suavizado (Desvanecimiento de bordes) */}
                 <div className="flex flex-col space-y-2">
                   <div className="flex justify-between items-center text-xs">
                     <span className="font-semibold text-slate-300">Suavizado (Smoothness)</span>
@@ -401,7 +424,6 @@ export default function DropZonePage({ onAddImage, showToast }) {
                   />
                 </div>
 
-                {/* Control de reducción de derrame cromático */}
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-semibold text-slate-300">Reducción de Spill (Derrame)</span>
                   <label className="relative inline-flex items-center cursor-pointer">
@@ -416,7 +438,6 @@ export default function DropZonePage({ onAddImage, showToast }) {
                 </div>
               </div>
 
-              {/* Botones de acción inferiores */}
               <div className="flex gap-3 w-full">
                 <button
                   onClick={() => setIsChromaMode(false)}
@@ -439,7 +460,8 @@ export default function DropZonePage({ onAddImage, showToast }) {
               </div>
             </div>
           ) : (
-            <div className="relative z-10 w-full flex flex-col items-center space-y-6">
+            <div className="relative z-10 w-full flex flex-col items-center space-y-5">
+              {/* Contenedor de la Vista Previa */}
               <div className="relative w-full aspect-video overflow-hidden rounded-2xl border border-slate-800 shadow-2xl bg-checkerboard flex items-center justify-center p-4">
                 <img
                   className={`max-w-full max-h-[260px] object-contain rounded-lg transition-all duration-300 ${
@@ -449,10 +471,21 @@ export default function DropZonePage({ onAddImage, showToast }) {
                   alt="Vista previa"
                 />
                 
-                {/* Indicador del tamaño actual del archivo cargado */}
+                {/* Insignia con el formato actual y tamaño */}
                 {!isProcessing && (
-                  <div className="absolute top-3 right-3 bg-slate-950/80 backdrop-blur-md px-3 py-1 rounded-xl border border-slate-800/80 text-[11px] font-semibold text-slate-300 font-mono shadow-lg">
-                    {getFileSize(imageSrc)}
+                  <div className="absolute top-3 right-3 flex items-center gap-1.5">
+                    <span className={`px-2.5 py-0.5 rounded-lg border text-[10px] font-mono font-bold tracking-wider backdrop-blur-md shadow-lg ${
+                      imageInfo.format === 'SVG'
+                        ? 'bg-cyan-950/80 border-cyan-500/40 text-cyan-300'
+                        : imageInfo.format === 'PNG'
+                        ? 'bg-indigo-950/80 border-indigo-500/40 text-indigo-300'
+                        : 'bg-slate-950/80 border-slate-800 text-slate-300'
+                    }`}>
+                      {imageInfo.format}
+                    </span>
+                    <span className="bg-slate-950/80 backdrop-blur-md px-2.5 py-0.5 rounded-lg border border-slate-800 text-[10px] font-mono font-semibold text-slate-300 shadow-lg">
+                      {imageInfo.sizeLabel}
+                    </span>
                   </div>
                 )}
 
@@ -461,7 +494,7 @@ export default function DropZonePage({ onAddImage, showToast }) {
                   <div className="absolute left-0 right-0 h-0.5 bg-indigo-400 shadow-[0_0_12px_#818cf8] animate-scan pointer-events-none"></div>
                 )}
 
-                {/* Capa de carga mientras la IA local procesa el recorte */}
+                {/* Capa de carga mientras procesa */}
                 {isProcessing && (
                   <div className="absolute inset-0 bg-slate-950/50 backdrop-blur-xs rounded-2xl flex flex-col items-center justify-center space-y-4">
                     <div className="w-10 h-10 border-3 border-indigo-500/20 border-t-indigo-400 rounded-full animate-spin"></div>
@@ -472,7 +505,90 @@ export default function DropZonePage({ onAddImage, showToast }) {
                 )}
               </div>
 
-              {/* Controles deslizantes para ajustar la calidad final de compresión de WebP */}
+              {/* PANEL DESTACADO: DESCARGA RÁPIDA DE RESULTADOS */}
+              <div className="w-full bg-gradient-to-r from-slate-900/90 via-indigo-950/40 to-slate-900/90 border border-indigo-500/30 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xl backdrop-blur-md">
+                <div className="flex items-center space-x-3 w-full sm:w-auto text-left">
+                  <div className="w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center shrink-0">
+                    <svg className="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-slate-100">Descarga Rápida</span>
+                      <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.2 rounded-full font-semibold">
+                        Transparencia OK
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400">Exporta en un clic sin pasos extra</p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+                  {/* Selector rápido de formato: SVG, PNG, WebP */}
+                  <div className="flex bg-slate-950/80 p-1 rounded-xl border border-slate-800 shrink-0">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setQuickDownloadFormat('svg')
+                      }}
+                      className={`px-3 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                        quickDownloadFormat === 'svg'
+                          ? 'bg-cyan-500 text-slate-950 shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                      title="SVG rasterizado con transparencia nativa"
+                    >
+                      SVG
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setQuickDownloadFormat('png')
+                      }}
+                      className={`px-3 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                        quickDownloadFormat === 'png'
+                          ? 'bg-indigo-600 text-white shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                      title="PNG con canal alfa transparente"
+                    >
+                      PNG
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setQuickDownloadFormat('webp')
+                      }}
+                      className={`px-3 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                        quickDownloadFormat === 'webp'
+                          ? 'bg-emerald-600 text-white shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                      title="WebP optimizado"
+                    >
+                      WebP
+                    </button>
+                  </div>
+
+                  {/* Botón de acción de descarga rápida */}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      handleQuickDownload(quickDownloadFormat)
+                    }}
+                    disabled={isProcessing}
+                    className="flex-1 sm:flex-none px-4 py-2 bg-gradient-to-r from-cyan-500 to-indigo-600 hover:from-cyan-400 hover:to-indigo-500 text-white rounded-xl text-xs font-bold transition-all duration-200 shadow-lg shadow-indigo-500/20 hover:shadow-indigo-500/35 hover:scale-102 active:scale-98 disabled:opacity-50 flex items-center justify-center gap-1.5 cursor-pointer shrink-0"
+                  >
+                    <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                    <span>Descargar .{quickDownloadFormat.toUpperCase()}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Controles deslizantes para ajustar la calidad de WebP */}
               <div className="w-full bg-slate-900/50 border border-slate-800/80 rounded-2xl p-4 flex flex-col space-y-3">
                 <div className="flex justify-between items-center">
                   <span className="text-xs font-semibold text-slate-300">Calidad de Compresión WebP</span>
@@ -493,21 +609,17 @@ export default function DropZonePage({ onAddImage, showToast }) {
                   />
                   <span className="text-[10px] text-slate-500 font-medium">Más Calidad</span>
                 </div>
-                <div className="flex justify-between text-[9px] text-slate-500 font-mono">
-                  <span>~ peso mínimo (~80% reducción)</span>
-                  <span>balanceado</span>
-                  <span>~ sin pérdidas</span>
-                </div>
               </div>
 
-              <div className="flex flex-wrap items-center justify-center gap-3 w-full">
+              {/* Barra de herramientas y transformaciones */}
+              <div className="flex flex-wrap items-center justify-center gap-2.5 w-full">
                 <button
                   onClick={(e) => {
                     e.stopPropagation()
                     setImageSrc(null)
                   }}
                   disabled={isProcessing}
-                  className="px-4 py-2.5 bg-slate-900/60 hover:bg-slate-800 text-slate-400 hover:text-slate-200 rounded-xl text-sm font-medium border border-slate-800/80 hover:border-slate-700/80 transition-all duration-200 disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+                  className="px-3.5 py-2.5 bg-slate-900/60 hover:bg-slate-800 text-slate-400 hover:text-slate-200 rounded-xl text-xs font-medium border border-slate-800/80 hover:border-slate-700/80 transition-all duration-200 disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
                 >
                   <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -521,7 +633,7 @@ export default function DropZonePage({ onAddImage, showToast }) {
                     handleCopy()
                   }}
                   disabled={isProcessing}
-                  className="px-4 py-2.5 bg-slate-900/60 hover:bg-slate-800 text-indigo-400 hover:text-indigo-300 rounded-xl text-sm font-medium border border-indigo-950/40 hover:border-indigo-900/60 transition-all duration-200 disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+                  className="px-3.5 py-2.5 bg-slate-900/60 hover:bg-slate-800 text-indigo-400 hover:text-indigo-300 rounded-xl text-xs font-medium border border-indigo-950/40 hover:border-indigo-900/60 transition-all duration-200 disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
                 >
                   <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
@@ -535,7 +647,7 @@ export default function DropZonePage({ onAddImage, showToast }) {
                     setIsChromaMode(true)
                   }}
                   disabled={isProcessing}
-                  className="px-4 py-2.5 bg-violet-950/40 hover:bg-violet-900/50 text-violet-300 hover:text-violet-200 rounded-xl text-sm font-medium border border-violet-900/40 hover:border-violet-850/65 transition-all duration-200 disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+                  className="px-3.5 py-2.5 bg-violet-950/40 hover:bg-violet-900/50 text-violet-300 hover:text-violet-200 rounded-xl text-xs font-medium border border-violet-900/40 hover:border-violet-850/65 transition-all duration-200 disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
                 >
                   <svg className="w-4 h-4 text-violet-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -550,12 +662,27 @@ export default function DropZonePage({ onAddImage, showToast }) {
                     handleRemoveBackground()
                   }}
                   disabled={isProcessing}
-                  className="px-4 py-2.5 bg-indigo-950/40 hover:bg-indigo-900/50 text-indigo-300 hover:text-indigo-200 rounded-xl text-sm font-medium border border-indigo-900/40 hover:border-indigo-850/65 transition-all duration-200 disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+                  className="px-3.5 py-2.5 bg-indigo-950/40 hover:bg-indigo-900/50 text-indigo-300 hover:text-indigo-200 rounded-xl text-xs font-medium border border-indigo-900/40 hover:border-indigo-850/65 transition-all duration-200 disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
                 >
                   <svg className="w-4 h-4 text-indigo-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
                   </svg>
-                  Quitar Fondo
+                  Quitar Fondo (IA)
+                </button>
+
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    handleConvertToSvg()
+                  }}
+                  disabled={isProcessing}
+                  className="px-3.5 py-2.5 bg-cyan-950/40 hover:bg-cyan-900/50 text-cyan-300 hover:text-cyan-200 rounded-xl text-xs font-medium border border-cyan-800/40 hover:border-cyan-700/60 transition-all duration-200 disabled:opacity-50 flex items-center gap-1.5 cursor-pointer shadow-sm shadow-cyan-950/50"
+                  title="Rasterizar a SVG preservando 100% las transparencias"
+                >
+                  <svg className="w-4 h-4 text-cyan-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                  </svg>
+                  Rasterizar a SVG
                 </button>
 
                 <button
@@ -564,12 +691,12 @@ export default function DropZonePage({ onAddImage, showToast }) {
                     handleConvertToWebp()
                   }}
                   disabled={isProcessing}
-                  className="px-4 py-2.5 bg-emerald-950/40 hover:bg-emerald-900/50 text-emerald-300 hover:text-emerald-200 rounded-xl text-sm font-medium border border-emerald-900/40 hover:border-emerald-850/65 transition-all duration-200 disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+                  className="px-3.5 py-2.5 bg-emerald-950/40 hover:bg-emerald-900/50 text-emerald-300 hover:text-emerald-200 rounded-xl text-xs font-medium border border-emerald-900/40 hover:border-emerald-850/65 transition-all duration-200 disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
                 >
                   <svg className="w-4 h-4 text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
                   </svg>
-                  Convertir a WebP
+                  A WebP
                 </button>
 
                 <button
@@ -578,7 +705,7 @@ export default function DropZonePage({ onAddImage, showToast }) {
                     handleSave()
                   }}
                   disabled={isProcessing}
-                  className="px-5 py-2.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white rounded-xl text-sm font-medium transition-all duration-200 shadow-md shadow-indigo-600/25 hover:shadow-indigo-600/35 disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+                  className="px-4 py-2.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white rounded-xl text-xs font-medium transition-all duration-200 shadow-md shadow-indigo-600/25 hover:shadow-indigo-600/35 disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
                 >
                   <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
@@ -600,4 +727,3 @@ export default function DropZonePage({ onAddImage, showToast }) {
     </div>
   )
 }
-

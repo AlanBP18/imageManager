@@ -18,7 +18,7 @@ export async function copyImageToClipboard(imageSrc) {
       img.src = imageSrc;
       await new Promise((resolve, reject) => {
         img.onload = resolve;
-        img.onerror = (e) => reject(new Error('No se pudo cargar la imagen para convertirla a PNG'));
+        img.onerror = () => reject(new Error('No se pudo cargar la imagen para convertirla a PNG'));
       });
 
       // Creamos un canvas temporal con el tamaño exacto de la imagen

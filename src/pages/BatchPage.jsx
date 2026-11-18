@@ -1,15 +1,18 @@
 import { useState, useRef, useEffect } from 'react'
 import { blobToWebP } from 'webp-converter-browser'
 import { removeBackground } from '@imgly/background-removal'
+import { rasterizeImageToSvg } from '../utils/svgConverter'
+import { downloadImageQuick, triggerFileDownload } from '../utils/imageDownloader'
+import { copyImageToClipboard } from '../utils/clipboard'
 import JSZip from 'jszip'
 
-export default function BatchPage({ showToast }) {
+export default function BatchPage({ showToast, onAddMultipleImages }) {
   const [step, setStep] = useState('select') // 'select' | 'processing' | 'completed'
   const [files, setFiles] = useState([])
   const [folderName, setFolderName] = useState('')
   const [options, setOptions] = useState({
-    convertToWebp: true,
-    quality: 0.75,
+    format: 'svg', // 'svg' | 'webp' | 'png'
+    quality: 0.8,
     removeBackground: false,
   })
 
@@ -68,22 +71,21 @@ export default function BatchPage({ showToast }) {
     const imageFiles = selectedFiles.filter((file) => file.type.startsWith('image/'))
 
     if (imageFiles.length === 0) {
-      showToast('No se encontraron imágenes válidas en la carpeta seleccionada.', 'error')
+      showToast('No se encontraron imágenes válidas en la selección.', 'error')
       return
     }
 
-    // Extract folder name from the first relative path
     if (imageFiles[0].webkitRelativePath) {
       const parts = imageFiles[0].webkitRelativePath.split('/')
       if (parts.length > 1) {
         setFolderName(parts[0])
       }
     } else {
-      setFolderName('Carpeta seleccionada')
+      setFolderName('Lote_de_imagenes')
     }
 
     setFiles(imageFiles)
-    showToast(`Se cargaron ${imageFiles.length} imágenes de la carpeta`, 'success')
+    showToast(`Se cargaron ${imageFiles.length} imágenes listas para procesar`, 'success')
   }
 
   const handleStartProcessing = async () => {
@@ -100,7 +102,7 @@ export default function BatchPage({ showToast }) {
     let totalProcessedSize = 0
     const processedList = []
 
-    addLog(`Iniciando procesamiento de carpeta "${folderName}" (${files.length} imágenes)...`)
+    addLog(`Iniciando lote "${folderName || 'Imagenes'}" (${files.length} archivos) | Formato salida: ${options.format.toUpperCase()}...`)
 
     for (let i = 0; i < files.length; i++) {
       if (cancelRef.current) {
@@ -126,36 +128,47 @@ export default function BatchPage({ showToast }) {
 
         // Paso 2: Eliminación automática de fondo (si el usuario activó la opción)
         if (options.removeBackground) {
-          addLog(`   └─ Quitando fondo mediante IA... (esto puede tardar unos segundos)`)
+          addLog(`   └─ Quitando fondo mediante IA (canal alfa)...`)
           const bgBlob = await removeBackground(currentSrc)
           currentSrc = await blobToDataURL(bgBlob)
-          addLog(`   └─ Fondo eliminado con éxito`)
+          addLog(`   └─ Fondo eliminado (transparencia activa)`)
         }
 
-        // Paso 3: Conversión y optimización a formato WebP
-        if (options.convertToWebp) {
+        // Paso 3: Conversión al formato seleccionado
+        let processedBytes = file.size
+        const baseName = file.name.substring(0, file.name.lastIndexOf('.')) || file.name
+
+        if (options.format === 'svg') {
+          addLog(`   └─ Rasterizando a SVG preservando transparencias...`)
+          const { svgBlob, svgDataUrl } = await rasterizeImageToSvg(currentSrc, { title: baseName })
+          currentSrc = svgDataUrl
+          processedBytes = svgBlob.size
+          totalProcessedSize += processedBytes
+          addLog(`   └─ Generado SVG con canal alfa (${formatSize(processedBytes)})`)
+        } else if (options.format === 'webp') {
           addLog(`   └─ Convirtiendo a WebP (Calidad: ${Math.round(options.quality * 100)}%)...`)
           const originalBlob = await getBlobFromSrc(currentSrc)
           const webpBlob = await blobToWebP(originalBlob, { quality: options.quality })
           currentSrc = await blobToDataURL(webpBlob)
-          
-          // Estimamos el tamaño real del archivo optimizado desde el string base64
-          const base64Data = currentSrc.split(',')[1]
-          const processedBytes = Math.round((base64Data.length * 3) / 4)
+          processedBytes = webpBlob.size
           totalProcessedSize += processedBytes
-          
-          const reduction = ((file.size - processedBytes) / file.size * 100).toFixed(0)
+          const reduction = file.size > 0 ? ((file.size - processedBytes) / file.size * 100).toFixed(0) : 0
           addLog(`   └─ Guardado en WebP (${formatSize(processedBytes)}) | Reducción: -${reduction}%`)
         } else {
-          // Si no se convirtió a WebP, calculamos el peso resultante del corte del fondo
-          const base64Data = currentSrc.split(',')[1]
-          const processedBytes = base64Data ? Math.round((base64Data.length * 3) / 4) : file.size
+          // PNG (con soporte transparente)
+          addLog(`   └─ Optimizando formato PNG con soporte de transparencia...`)
+          const res = await fetch(currentSrc)
+          const pngBlob = await res.blob()
+          processedBytes = pngBlob.size
           totalProcessedSize += processedBytes
+          addLog(`   └─ Guardado en PNG transparente (${formatSize(processedBytes)})`)
         }
 
         processedList.push({
           src: currentSrc,
           name: file.name,
+          format: options.format,
+          sizeBytes: processedBytes
         })
       } catch (error) {
         console.error(`Error processing file ${file.name}:`, error)
@@ -171,7 +184,7 @@ export default function BatchPage({ showToast }) {
     })
     setIsProcessing(false)
     setStep('completed')
-    showToast('Procesamiento en lote completado.', 'success')
+    showToast('¡Procesamiento en lote completado!', 'success')
   }
 
   const handleCancel = () => {
@@ -189,31 +202,51 @@ export default function BatchPage({ showToast }) {
     processedImages.forEach((img) => {
       const originalName = img.name
       const nameWithoutExt = originalName.substring(0, originalName.lastIndexOf('.')) || originalName
-      const extension = options.convertToWebp ? 'webp' : (originalName.split('.').pop() || 'png')
+      const extension = img.format || options.format
       const newName = `${nameWithoutExt}_optimizado.${extension}`
 
-      // Extraemos solo el bloque base64 para poder meterlo en el ZIP
-      const base64Content = img.src.split(',')[1]
-      folder.file(newName, base64Content, { base64: true })
+      if (extension === 'svg' || img.src.startsWith('data:image/svg+xml')) {
+        const svgContent = decodeURIComponent(img.src.split(',')[1] || '')
+        folder.file(newName, svgContent)
+      } else {
+        const base64Content = img.src.split(',')[1]
+        folder.file(newName, base64Content, { base64: true })
+      }
     })
 
     try {
       const zipBlob = await zip.generateAsync({ type: 'blob' })
-      const zipUrl = URL.createObjectURL(zipBlob)
-
-      const link = document.createElement('a')
-      link.href = zipUrl
-      link.download = `${folderName || 'imagenes'}_optimizado.zip`
-      document.body.appendChild(link)
-      link.click()
-      document.body.removeChild(link)
-
-      URL.revokeObjectURL(zipUrl)
+      triggerFileDownload(zipBlob, `${folderName || 'imagenes'}_${options.format}.zip`)
       showToast(`¡Se ha descargado el archivo ZIP con ${processedImages.length} imágenes!`, 'success')
-      handleReset()
     } catch (error) {
       console.error('Error generating ZIP:', error)
       showToast('Error al generar el archivo ZIP. Inténtalo de nuevo.', 'error')
+    }
+  }
+
+  const handleQuickDownloadItem = async (img) => {
+    try {
+      const nameWithoutExt = img.name.substring(0, img.name.lastIndexOf('.')) || img.name
+      showToast(`Descargando ${nameWithoutExt}.${img.format}...`, 'info')
+      await downloadImageQuick(img.src, {
+        filename: `${nameWithoutExt}_resultado`,
+        format: img.format,
+        quality: options.quality
+      })
+      showToast(`¡Descargado: ${nameWithoutExt}.${img.format}!`, 'success')
+    } catch (err) {
+      console.error('Error en descarga rápida:', err)
+      showToast('Error al descargar la imagen individual.', 'error')
+    }
+  }
+
+  const handleCopyItem = async (imgSrc) => {
+    showToast('Copiando al portapapeles...', 'info')
+    const ok = await copyImageToClipboard(imgSrc)
+    if (ok) {
+      showToast('¡Imagen copiada al portapapeles!', 'success')
+    } else {
+      showToast('No se pudo copiar la imagen.', 'error')
     }
   }
 
@@ -225,7 +258,7 @@ export default function BatchPage({ showToast }) {
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-6 relative">
-      <div className="w-full max-w-2xl z-10">
+      <div className="w-full max-w-3xl z-10">
         
         {/* PASO 1: SELECCIONAR CARPETA Y CONFIGURAR AUTOMATIZACIÓN */}
         {step === 'select' && (
@@ -235,11 +268,11 @@ export default function BatchPage({ showToast }) {
                 Procesamiento en Lote
               </h1>
               <p className="text-slate-400 text-sm mt-1">
-                Automatiza la conversión a WebP y eliminación de fondo de una carpeta completa.
+                Automatiza la rasterización a SVG con transparencia, WebP o eliminación de fondo de lotes completos.
               </p>
             </div>
 
-            {/* Zona interactiva para soltar/seleccionar carpetas (solo disponible si no hay archivos cargados) */}
+            {/* Zona interactiva para soltar/seleccionar carpetas */}
             {files.length === 0 ? (
               <div
                 onClick={() => fileInputRef.current.click()}
@@ -257,9 +290,9 @@ export default function BatchPage({ showToast }) {
                   </div>
 
                   <div className="space-y-1">
-                    <h3 className="text-lg font-bold text-slate-200">Cargar Carpeta de Imágenes</h3>
+                    <h3 className="text-lg font-bold text-slate-200">Cargar Carpeta o Imágenes</h3>
                     <p className="text-slate-400 text-xs max-w-xs mx-auto">
-                      Presiona aquí para seleccionar una carpeta completa de imágenes.
+                      Presiona aquí para seleccionar un directorio completo o varias imágenes simultáneamente.
                     </p>
                   </div>
                 </div>
@@ -276,89 +309,125 @@ export default function BatchPage({ showToast }) {
                 />
               </div>
             ) : (
-              /* Vista de carpeta activa y cargada en memoria, sin opción de recarga */
               <div className="apple-glass rounded-3xl p-6 flex flex-col sm:flex-row items-center justify-between gap-4 border-indigo-500/20">
                 <div className="apple-glass-backdrop"></div>
                 <div className="relative z-10 flex flex-col sm:flex-row items-center justify-between w-full gap-4">
                   <div className="flex items-center space-x-4 text-left">
-                  <div className="w-14 h-14 bg-indigo-500/10 border border-indigo-500/20 rounded-2xl flex items-center justify-center shrink-0">
-                    <svg className="w-7 h-7 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5M5 19v-4a2 2 0 00-2-2m14 0h2a2 2 0 002-2V7a2 2 0 00-2-2h-3.5a1 1 0 01-.8-.4l-.9-1.2A1 1 0 0013.5 3h-3a1 1 0 00-.8.4l-.9 1.2a1 1 0 01-.8.4H5" />
-                    </svg>
+                    <div className="w-14 h-14 bg-indigo-500/10 border border-indigo-500/20 rounded-2xl flex items-center justify-center shrink-0">
+                      <svg className="w-7 h-7 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5M5 19v-4a2 2 0 00-2-2m14 0h2a2 2 0 002-2V7a2 2 0 00-2-2h-3.5a1 1 0 01-.8-.4l-.9-1.2A1 1 0 0013.5 3h-3a1 1 0 00-.8.4l-.9 1.2a1 1 0 01-.8.4H5" />
+                      </svg>
+                    </div>
+                    <div>
+                      <h3 className="text-base font-bold text-slate-100 truncate max-w-[280px]">
+                        Lote: <span className="text-indigo-400">"{folderName}"</span>
+                      </h3>
+                      <p className="text-slate-400 text-xs mt-0.5">
+                        {files.length} imágenes encontradas listas para procesar
+                      </p>
+                    </div>
                   </div>
-                  <div>
-                    <h3 className="text-base font-bold text-slate-100 truncate max-w-[280px]">
-                      Carpeta: <span className="text-indigo-400">"{folderName}"</span>
-                    </h3>
-                    <p className="text-slate-400 text-xs mt-0.5">
-                      {files.length} imágenes encontradas listas para procesar
-                    </p>
-                  </div>
-                </div>
 
-                <button
-                  onClick={handleReset}
-                  className="px-4 py-2 bg-rose-950/30 hover:bg-rose-950/50 text-rose-450 hover:text-rose-350 border border-rose-900/30 hover:border-rose-900/50 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all duration-200 cursor-pointer"
-                  title="Descartar carpeta"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                  </svg>
-                  Eliminar Carpeta
-                </button>
+                  <button
+                    onClick={handleReset}
+                    className="px-4 py-2 bg-rose-950/30 hover:bg-rose-950/50 text-rose-450 hover:text-rose-350 border border-rose-900/30 hover:border-rose-900/50 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all duration-200 cursor-pointer"
+                    title="Descartar lote"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                    Descartar
+                  </button>
                 </div>
               </div>
             )}
 
-            {/* Panel de Opciones de Automatización (solo visible tras cargar las imágenes) */}
+            {/* Panel de Opciones de Automatización */}
             {files.length > 0 && (
               <div className="apple-glass rounded-3xl p-6 space-y-5">
                 <div className="apple-glass-backdrop"></div>
-                <div className="relative z-10 space-y-5">
-                <h4 className="text-sm font-bold text-indigo-300 tracking-wider uppercase">
-                  Opciones de Automatización
-                </h4>
+                <div className="relative z-10 space-y-5 text-left">
+                  <h4 className="text-sm font-bold text-indigo-300 tracking-wider uppercase">
+                    Opciones de Automatización y Salida
+                  </h4>
 
-                <div className="space-y-4">
-                  {/* Acción A: Conversión de Formato a WebP */}
+                  {/* Selector de formato de salida */}
                   <div className="space-y-3">
-                    <label className="flex items-center space-x-3 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={options.convertToWebp}
-                        onChange={(e) => setOptions({ ...options, convertToWebp: e.target.checked })}
-                        className="w-4 h-4 rounded text-indigo-600 bg-slate-950 border-slate-800 focus:ring-indigo-500 focus:ring-offset-slate-900"
-                      />
-                      <span className="text-sm font-medium text-slate-200">Convertir y Comprimir a WebP</span>
-                    </label>
-
-                    {options.convertToWebp && (
-                      <div className="pl-7 space-y-2">
-                        <div className="flex justify-between items-center text-xs">
-                          <span className="text-slate-400">Calidad de compresión</span>
-                          <span className="font-bold text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded-full border border-indigo-500/20">
-                            {Math.round(options.quality * 100)}%
-                          </span>
+                    <span className="text-xs font-semibold text-slate-300">Formato de Exportación Destino:</span>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div
+                        onClick={() => setOptions({ ...options, format: 'svg' })}
+                        className={`p-3.5 rounded-2xl border cursor-pointer transition-all duration-200 flex flex-col space-y-1 ${
+                          options.format === 'svg'
+                            ? 'bg-cyan-950/40 border-cyan-500/60 shadow-lg shadow-cyan-950/30 ring-1 ring-cyan-500/30'
+                            : 'bg-slate-900/60 border-slate-800/80 hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-cyan-300">SVG Rasterizado</span>
+                          <span className="text-[9px] bg-cyan-500/20 text-cyan-300 px-1.5 py-0.5 rounded-md font-mono font-bold">RECOMENDADO</span>
                         </div>
-                        <div className="flex items-center space-x-3">
-                          <span className="text-[10px] text-slate-500">Más Compresión</span>
-                          <input
-                            type="range"
-                            min="0.1"
-                            max="1.0"
-                            step="0.05"
-                            value={options.quality}
-                            onChange={(e) => setOptions({ ...options, quality: parseFloat(e.target.value) })}
-                            className="flex-1 h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500 focus:outline-none"
-                          />
-                          <span className="text-[10px] text-slate-500">Más Calidad</span>
-                        </div>
+                        <p className="text-[11px] text-slate-400">Preserva 100% de canal alfa y transparencias nativas.</p>
                       </div>
-                    )}
+
+                      <div
+                        onClick={() => setOptions({ ...options, format: 'png' })}
+                        className={`p-3.5 rounded-2xl border cursor-pointer transition-all duration-200 flex flex-col space-y-1 ${
+                          options.format === 'png'
+                            ? 'bg-indigo-950/40 border-indigo-500/60 shadow-lg shadow-indigo-950/30 ring-1 ring-indigo-500/30'
+                            : 'bg-slate-900/60 border-slate-800/80 hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-indigo-300">PNG Transparente</span>
+                          <span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-1.5 py-0.5 rounded-md font-mono font-bold">ESTÁNDAR</span>
+                        </div>
+                        <p className="text-[11px] text-slate-400">Canal alfa universal para web y diseño.</p>
+                      </div>
+
+                      <div
+                        onClick={() => setOptions({ ...options, format: 'webp' })}
+                        className={`p-3.5 rounded-2xl border cursor-pointer transition-all duration-200 flex flex-col space-y-1 ${
+                          options.format === 'webp'
+                            ? 'bg-emerald-950/40 border-emerald-500/60 shadow-lg shadow-emerald-950/30 ring-1 ring-emerald-500/30'
+                            : 'bg-slate-900/60 border-slate-800/80 hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-emerald-300">WebP Comprimido</span>
+                          <span className="text-[9px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded-md font-mono font-bold">LIGERO</span>
+                        </div>
+                        <p className="text-[11px] text-slate-400">Máxima optimización de peso para la web.</p>
+                      </div>
+                    </div>
                   </div>
 
-                  {/* Acción B: Remover fondo de forma automática por IA local */}
-                  <div className="space-y-2">
+                  {options.format === 'webp' && (
+                    <div className="space-y-2 pt-1">
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="text-slate-400">Calidad de compresión WebP</span>
+                        <span className="font-bold text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded-full border border-indigo-500/20">
+                          {Math.round(options.quality * 100)}%
+                        </span>
+                      </div>
+                      <div className="flex items-center space-x-3">
+                        <span className="text-[10px] text-slate-500">Más Compresión</span>
+                        <input
+                          type="range"
+                          min="0.1"
+                          max="1.0"
+                          step="0.05"
+                          value={options.quality}
+                          onChange={(e) => setOptions({ ...options, quality: parseFloat(e.target.value) })}
+                          className="flex-1 h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500 focus:outline-none"
+                        />
+                        <span className="text-[10px] text-slate-500">Más Calidad</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Opción: Quitar Fondo por IA */}
+                  <div className="space-y-2 pt-2 border-t border-slate-800/60">
                     <label className="flex items-center space-x-3 cursor-pointer">
                       <input
                         type="checkbox"
@@ -366,7 +435,7 @@ export default function BatchPage({ showToast }) {
                         onChange={(e) => setOptions({ ...options, removeBackground: e.target.checked })}
                         className="w-4 h-4 rounded text-indigo-600 bg-slate-950 border-slate-800 focus:ring-indigo-500 focus:ring-offset-slate-900"
                       />
-                      <span className="text-sm font-medium text-slate-200">Quitar Fondo (IA Local)</span>
+                      <span className="text-sm font-medium text-slate-200">Quitar Fondo Automático (IA con canal alfa transparente)</span>
                     </label>
 
                     {options.removeBackground && (
@@ -376,32 +445,31 @@ export default function BatchPage({ showToast }) {
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                           </svg>
                           <span>
-                            <strong>Nota importante:</strong> La eliminación de fondo corre un modelo de IA pesado en tu navegador. Para lotes de muchas imágenes, esto consumirá recursos del sistema y tomará un tiempo considerable por imagen.
+                            <strong>Nota:</strong> Quitar fondo correrá el modelo de IA local en cada imagen. Las imágenes resultantes tendrán fondo 100% transparente en el SVG o PNG final.
                           </span>
                         </div>
                       </div>
                     )}
                   </div>
-                </div>
 
-                {/* Botón de envío principal para arrancar el procesamiento */}
-                <div className="pt-2">
-                  <button
-                    onClick={handleStartProcessing}
-                    className="w-full py-3.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white rounded-2xl text-sm font-medium transition-all duration-200 shadow-lg shadow-indigo-600/25 hover:shadow-indigo-600/35 flex items-center justify-center gap-2 cursor-pointer"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                    </svg>
-                    Iniciar Automatización de {files.length} Imágenes
-                  </button>
+                  {/* Botón de envío principal */}
+                  <div className="pt-2">
+                    <button
+                      onClick={handleStartProcessing}
+                      disabled={isProcessing}
+                      className="w-full py-3.5 bg-gradient-to-r from-cyan-500 via-indigo-600 to-purple-600 hover:from-cyan-400 hover:via-indigo-500 hover:to-purple-500 text-white rounded-2xl text-sm font-semibold transition-all duration-200 shadow-lg shadow-indigo-600/25 hover:shadow-indigo-600/35 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                      </svg>
+                      Iniciar Procesamiento de {files.length} Imágenes ({options.format.toUpperCase()})
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
-          )}
+            )}
           </div>
         )}
-
 
         {/* PASO 2: VISTA DE PROCESAMIENTO EN PROGRESO */}
         {step === 'processing' && (
@@ -409,49 +477,49 @@ export default function BatchPage({ showToast }) {
             <div className="apple-glass rounded-3xl p-6 flex flex-col items-center">
               <div className="apple-glass-backdrop"></div>
               <div className="relative z-10 w-full flex flex-col items-center space-y-6">
-              
-              <div className="w-full flex items-center justify-between text-sm">
-                <span className="font-semibold text-slate-300">Progreso del Lote</span>
-                <span className="text-indigo-400 font-bold">{currentIndex + 1} de {files.length}</span>
-              </div>
-
-              {/* Barra de Progreso Acumulado */}
-              <div className="w-full h-3 bg-slate-950 rounded-full border border-slate-850 overflow-hidden relative">
-                <div
-                  className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 rounded-full shadow-[0_0_12px_rgba(99,102,241,0.5)] transition-all duration-300"
-                  style={{ width: `${((currentIndex + 1) / files.length) * 100}%` }}
-                ></div>
-              </div>
-
-              {/* Indicador de Acción y Archivo en Proceso */}
-              <div className="flex items-center space-x-3 w-full bg-slate-950/40 border border-slate-850 px-4 py-3 rounded-2xl">
-                <div className="w-5 h-5 border-2 border-indigo-500/20 border-t-indigo-400 rounded-full animate-spin shrink-0"></div>
-                <div className="flex-1 text-left">
-                  <span className="text-xs text-slate-400 block font-semibold">Acción actual:</span>
-                  <span className="text-xs text-indigo-200 font-mono truncate block">{currentActionText}</span>
+                
+                <div className="w-full flex items-center justify-between text-sm">
+                  <span className="font-semibold text-slate-300">Progreso del Lote</span>
+                  <span className="text-cyan-400 font-bold">{currentIndex + 1} de {files.length}</span>
                 </div>
-              </div>
 
-              {/* Consola del Sistema en Tiempo Real */}
-              <div className="w-full space-y-2">
-                <div className="flex items-center justify-between px-1">
-                  <span className="text-xs font-semibold text-slate-400 font-mono">Consola de Salida</span>
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                {/* Barra de Progreso Acumulado */}
+                <div className="w-full h-3 bg-slate-950 rounded-full border border-slate-850 overflow-hidden relative">
+                  <div
+                    className="h-full bg-gradient-to-r from-cyan-500 via-indigo-500 to-purple-500 rounded-full shadow-[0_0_12px_rgba(6,182,212,0.5)] transition-all duration-300"
+                    style={{ width: `${((currentIndex + 1) / files.length) * 100}%` }}
+                  ></div>
                 </div>
-                <div className="w-full h-48 bg-slate-950 border border-slate-900 rounded-2xl p-4 overflow-y-auto font-mono text-[10px] text-emerald-400 space-y-1 text-left shadow-inner">
-                  {logs.map((log, idx) => (
-                    <div key={idx} className="whitespace-pre-wrap leading-relaxed">{log}</div>
-                  ))}
-                  <div ref={logsEndRef} />
-                </div>
-              </div>
 
-              <button
-                onClick={handleCancel}
-                className="px-6 py-2.5 bg-rose-950/30 hover:bg-rose-950/50 text-rose-300 rounded-xl text-xs font-semibold border border-rose-900/40 hover:border-rose-800/40 transition-all duration-200 cursor-pointer"
-              >
-                Cancelar Operación
-              </button>
+                {/* Indicador de Acción actual */}
+                <div className="flex items-center space-x-3 w-full bg-slate-950/40 border border-slate-850 px-4 py-3 rounded-2xl">
+                  <div className="w-5 h-5 border-2 border-cyan-500/20 border-t-cyan-400 rounded-full animate-spin shrink-0"></div>
+                  <div className="flex-1 text-left">
+                    <span className="text-xs text-slate-400 block font-semibold">Acción actual:</span>
+                    <span className="text-xs text-cyan-200 font-mono truncate block">{currentActionText}</span>
+                  </div>
+                </div>
+
+                {/* Consola del Sistema en Tiempo Real */}
+                <div className="w-full space-y-2">
+                  <div className="flex items-center justify-between px-1">
+                    <span className="text-xs font-semibold text-slate-400 font-mono">Consola de Salida</span>
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                  </div>
+                  <div className="w-full h-48 bg-slate-950 border border-slate-900 rounded-2xl p-4 overflow-y-auto font-mono text-[10px] text-emerald-400 space-y-1 text-left shadow-inner">
+                    {logs.map((log, idx) => (
+                      <div key={idx} className="whitespace-pre-wrap leading-relaxed">{log}</div>
+                    ))}
+                    <div ref={logsEndRef} />
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleCancel}
+                  className="px-6 py-2.5 bg-rose-950/30 hover:bg-rose-950/50 text-rose-300 rounded-xl text-xs font-semibold border border-rose-900/40 hover:border-rose-800/40 transition-all duration-200 cursor-pointer"
+                >
+                  Cancelar Operación
+                </button>
               </div>
             </div>
           </div>
@@ -460,75 +528,136 @@ export default function BatchPage({ showToast }) {
         {/* PASO 3: VISTA DE AUTOMATIZACIÓN COMPLETADA */}
         {step === 'completed' && (
           <div className="space-y-6">
-            <div className="apple-glass rounded-3xl p-8 flex flex-col items-center text-center">
+            <div className="apple-glass rounded-3xl p-6 sm:p-8 flex flex-col items-center text-center">
               <div className="apple-glass-backdrop"></div>
               <div className="relative z-10 w-full flex flex-col items-center space-y-6">
-              
-              {/* Animación del checkmark de éxito */}
-              <div className="relative mb-2">
-                <div className="absolute inset-0 bg-emerald-500/10 rounded-full blur-2xl animate-pulse"></div>
-                <div className="relative w-20 h-20 bg-emerald-950/40 border border-emerald-500/30 rounded-full flex items-center justify-center shadow-lg shadow-emerald-500/10">
-                  <svg className="w-10 h-10 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
+                
+                {/* Animación del checkmark */}
+                <div className="relative mb-2">
+                  <div className="absolute inset-0 bg-emerald-500/10 rounded-full blur-2xl animate-pulse"></div>
+                  <div className="relative w-16 h-16 bg-emerald-950/40 border border-emerald-500/30 rounded-full flex items-center justify-center shadow-lg shadow-emerald-500/10">
+                    <svg className="w-8 h-8 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </div>
                 </div>
-              </div>
 
-              <div className="space-y-1">
-                <h2 className="text-2xl font-extrabold text-slate-100">¡Automatización Completada!</h2>
-                <p className="text-slate-400 text-xs">
-                  El procesamiento del lote finalizó con éxito.
-                </p>
-              </div>
+                <div className="space-y-1">
+                  <h2 className="text-2xl font-extrabold text-slate-100">¡Lote Procesado con Éxito!</h2>
+                  <p className="text-slate-400 text-xs">
+                    Tus imágenes fueron convertidas a formato <span className="text-cyan-400 font-bold uppercase">.{options.format}</span> con soporte de transparencias.
+                  </p>
+                </div>
 
-              {/* Cuadrícula de estadísticas finales del procesamiento */}
-              <div className="grid grid-cols-3 gap-4 w-full bg-slate-950/50 border border-slate-900 rounded-2xl p-4">
-                <div className="flex flex-col">
-                  <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Imágenes</span>
-                  <span className="text-lg font-extrabold text-slate-200 mt-1">{stats.count}</span>
+                {/* Estadísticas */}
+                <div className="grid grid-cols-3 gap-4 w-full bg-slate-950/50 border border-slate-900 rounded-2xl p-4">
+                  <div className="flex flex-col">
+                    <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Imágenes</span>
+                    <span className="text-lg font-extrabold text-slate-200 mt-1">{stats.count}</span>
+                  </div>
+                  <div className="flex flex-col border-x border-slate-900">
+                    <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Peso Original</span>
+                    <span className="text-lg font-extrabold text-slate-200 mt-1">{formatSize(stats.originalSize)}</span>
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Resultado</span>
+                    <span className="text-lg font-extrabold text-cyan-400 mt-1">{formatSize(stats.processedSize)}</span>
+                  </div>
                 </div>
-                <div className="flex flex-col border-x border-slate-900">
-                  <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Peso Original</span>
-                  <span className="text-lg font-extrabold text-slate-200 mt-1">{formatSize(stats.originalSize)}</span>
-                </div>
-                <div className="flex flex-col">
-                  <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Optimizado</span>
-                  <span className="text-lg font-extrabold text-emerald-400 mt-1">{formatSize(stats.processedSize)}</span>
-                </div>
-              </div>
 
-              {/* Banner destacado indicando el ahorro de espacio obtenido */}
-              {stats.originalSize > 0 && stats.processedSize < stats.originalSize && (
-                <div className="w-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs font-semibold py-3 px-4 rounded-xl flex items-center justify-center gap-2">
-                  <svg className="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-                  </svg>
-                  ¡Ahorraste {((stats.originalSize - stats.processedSize) / stats.originalSize * 100).toFixed(0)}% del espacio en el almacenamiento local!
+                {/* Botones de acción principales */}
+                <div className="flex flex-col sm:flex-row gap-3 w-full">
+                  <button
+                    onClick={handleReset}
+                    className="flex-1 py-3 bg-slate-900/60 hover:bg-slate-800 text-slate-300 border border-slate-800 rounded-xl text-sm font-medium transition-all duration-200 cursor-pointer flex items-center justify-center gap-2"
+                  >
+                    <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    Nuevo Lote
+                  </button>
+                  {onAddMultipleImages && (
+                    <button
+                      onClick={() => onAddMultipleImages(processedImages.map((i) => i.src))}
+                      className="flex-1 py-3 bg-indigo-950/40 hover:bg-indigo-900/60 text-indigo-300 border border-indigo-800/40 rounded-xl text-sm font-medium transition-all duration-200 cursor-pointer flex items-center justify-center gap-2"
+                      title="Guardar las imágenes procesadas en la galería local"
+                    >
+                      <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
+                      </svg>
+                      Añadir a Galería
+                    </button>
+                  )}
+                  <button
+                    onClick={handleSaveToDevice}
+                    disabled={stats.count === 0}
+                    className="flex-[1.5] py-3 bg-gradient-to-r from-cyan-500 to-indigo-600 hover:from-cyan-400 hover:to-indigo-500 text-white rounded-xl text-sm font-semibold transition-all duration-200 shadow-lg shadow-indigo-600/25 hover:shadow-indigo-600/40 disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                    </svg>
+                    Descargar Todo en ZIP ({options.format.toUpperCase()})
+                  </button>
                 </div>
-              )}
 
-              {/* Botones de acción finales */}
-              <div className="pt-2 flex gap-3 w-full">
-                <button
-                  onClick={handleReset}
-                  className="flex-1 py-3.5 bg-rose-950/20 hover:bg-rose-950/40 text-rose-300 border border-rose-900/30 hover:border-rose-900/50 rounded-xl text-sm font-medium transition-all duration-200 cursor-pointer flex items-center justify-center gap-2"
-                >
-                  <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                  </svg>
-                  Descartar Lote
-                </button>
-                <button
-                  onClick={handleSaveToDevice}
-                  disabled={stats.count === 0}
-                  className="flex-[1.5] py-3.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white rounded-xl text-sm font-medium transition-all duration-200 shadow-lg shadow-indigo-600/20 hover:shadow-indigo-600/30 disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-                  </svg>
-                  Guardar en Dispositivo
-                </button>
+                {/* VISTA PREVIA Y DESCARGA RÁPIDA INDIVIDUAL DE CADA RESULTADO */}
+                <div className="w-full pt-4 border-t border-slate-800/60 text-left">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">
+                      Resultados Individuales ({processedImages.length})
+                    </span>
+                    <span className="text-[11px] text-slate-400">
+                      Haz clic en descargar para guardar cualquiera al instante
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 max-h-[360px] overflow-y-auto p-1">
+                    {processedImages.map((img, idx) => (
+                      <div
+                        key={idx}
+                        className="bg-slate-950/70 border border-slate-800/80 rounded-xl overflow-hidden flex flex-col group hover:border-cyan-500/40 transition-all duration-200"
+                      >
+                        <div className="aspect-square bg-checkerboard flex items-center justify-center p-2 relative">
+                          <img
+                            src={img.src}
+                            alt={img.name}
+                            className="max-h-full max-w-full object-contain"
+                          />
+                          <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded text-[8px] font-mono font-bold bg-cyan-950/80 text-cyan-300 border border-cyan-800/50">
+                            {img.format.toUpperCase()}
+                          </span>
+                        </div>
+                        <div className="p-2 flex flex-col gap-1.5 bg-slate-900/60">
+                          <span className="text-[10px] font-medium text-slate-200 truncate" title={img.name}>
+                            {img.name}
+                          </span>
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => handleQuickDownloadItem(img)}
+                              className="flex-1 py-1 px-1.5 bg-cyan-950/60 hover:bg-cyan-900/80 text-cyan-300 border border-cyan-800/50 rounded-lg text-[9px] font-bold transition-all duration-150 flex items-center justify-center gap-1 cursor-pointer"
+                              title="Descarga rápida directa"
+                            >
+                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                              </svg>
+                              Descargar
+                            </button>
+                            <button
+                              onClick={() => handleCopyItem(img.src)}
+                              className="p-1 text-slate-400 hover:text-indigo-400 hover:bg-slate-800 rounded-lg transition-all cursor-pointer"
+                              title="Copiar imagen"
+                            >
+                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2" />
+                              </svg>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
+
               </div>
             </div>
           </div>
